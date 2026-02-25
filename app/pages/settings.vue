@@ -3,7 +3,6 @@ import { testAiProviderKey } from '../utils/ai-meal-import'
 import {
   changeAiIntegrationPassword,
   clearAiIntegration,
-  getUnlockedAiIntegration,
   isAiIntegrationUnlocked as getIsAiIntegrationUnlocked,
   isValidAiPin,
   lockAiIntegration,
@@ -30,6 +29,30 @@ type GoalSettings = Pick<AppSettings, 'dailyCalorieGoal' | 'proteinGoal' | 'carb
 type RecommendationSex = 'female' | 'male'
 type RecommendationObjective = 'loss' | 'maintenance' | 'gain' | 'muscle'
 type RecommendationActivity = 'sedentary' | 'low-active' | 'active' | 'very-active'
+
+const AI_PROVIDER_OPTIONS = [
+  { label: 'OpenAI', value: 'openai' },
+  { label: 'Anthropic', value: 'anthropic' }
+]
+
+const RECOMMENDATION_SEX_OPTIONS = [
+  { label: 'Female', value: 'female' },
+  { label: 'Male', value: 'male' }
+]
+
+const RECOMMENDATION_ACTIVITY_OPTIONS = [
+  { label: 'Sedentary', value: 'sedentary' },
+  { label: 'Low active', value: 'low-active' },
+  { label: 'Active', value: 'active' },
+  { label: 'Very active', value: 'very-active' }
+]
+
+const RECOMMENDATION_OBJECTIVE_OPTIONS = [
+  { label: 'Weight loss', value: 'loss' },
+  { label: 'Maintenance', value: 'maintenance' },
+  { label: 'Weight gain', value: 'gain' },
+  { label: 'Build muscle', value: 'muscle' }
+]
 
 interface ExampleMealIngredientSnapshot {
   name: string
@@ -259,14 +282,12 @@ onMounted(async () => {
     aiIntegration.value = metadata
     isAiUnlocked.value = getIsAiIntegrationUnlocked()
     setGoalFormValues(settings)
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to load settings from IndexedDB', error)
     formError.value = 'Could not load settings. Using default goals for now.'
     setGoalFormDefaults()
     currentSettings.value = createDefaultAppSettings()
-  }
-  finally {
+  } finally {
     isLoaded.value = true
   }
 })
@@ -316,12 +337,10 @@ async function saveSettings() {
     saveNotice.value = 'Saved. The Meals page gauges will use these goals.'
     dangerError.value = ''
     dangerNotice.value = ''
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to save settings to IndexedDB', error)
     formError.value = 'Could not save settings. Try again.'
-  }
-  finally {
+  } finally {
     isSaving.value = false
   }
 }
@@ -396,12 +415,10 @@ async function saveAiIntegrationSetup() {
     dangerError.value = ''
     dangerNotice.value = ''
     closeAiSetupModal()
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to set up AI integration', error)
     aiSetupError.value = error instanceof Error ? error.message : 'Could not set up AI integration.'
-  }
-  finally {
+  } finally {
     isTestingAiIntegrationKey.value = false
     isSavingAiIntegration.value = false
   }
@@ -436,11 +453,9 @@ async function submitAiUnlock() {
     isAiUnlocked.value = true
     aiIntegrationNotice.value = 'AI integration unlocked in this tab.'
     closeAiUnlockModal()
-  }
-  catch (error) {
+  } catch (error) {
     aiUnlockError.value = error instanceof Error ? error.message : 'Could not unlock AI integration.'
-  }
-  finally {
+  } finally {
     isSavingAiIntegration.value = false
   }
 }
@@ -477,12 +492,10 @@ async function clearAiIntegrationFromDevice() {
     aiIntegration.value = null
     isAiUnlocked.value = false
     aiIntegrationNotice.value = 'AI integration removed from this browser.'
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to clear AI integration', error)
     aiIntegrationError.value = 'Could not clear AI integration. Try again.'
-  }
-  finally {
+  } finally {
     isSavingAiIntegration.value = false
   }
 }
@@ -541,12 +554,10 @@ async function submitAiChangeProvider() {
     isAiUnlocked.value = true
     aiIntegrationNotice.value = 'Provider/key updated and re-encrypted.'
     closeAiChangeProviderModal()
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to change AI provider/key', error)
     aiChangeProviderError.value = error instanceof Error ? error.message : 'Could not update provider/key.'
-  }
-  finally {
+  } finally {
     isTestingAiIntegrationKey.value = false
     isSavingAiIntegration.value = false
   }
@@ -595,12 +606,10 @@ async function submitAiChangePassword() {
     isAiUnlocked.value = true
     aiIntegrationNotice.value = 'Encryption password updated.'
     closeAiChangePasswordModal()
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to change AI encryption password', error)
     aiChangePasswordError.value = error instanceof Error ? error.message : 'Could not change encryption password.'
-  }
-  finally {
+  } finally {
     isSavingAiIntegration.value = false
   }
 }
@@ -692,12 +701,10 @@ async function generateExampleData() {
     sampleDataError.value = ''
     dangerError.value = ''
     dangerNotice.value = ''
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to generate example data', error)
     sampleDataError.value = 'Could not generate example data. Try again.'
-  }
-  finally {
+  } finally {
     isGeneratingExampleData.value = false
   }
 }
@@ -739,12 +746,10 @@ async function clearAllLocalData() {
     isAiChangePasswordModalOpen.value = false
     isAiUnlockModalOpen.value = false
     dangerNotice.value = 'All local data was cleared from this browser.'
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to clear local IndexedDB data', error)
     dangerError.value = 'Could not clear local data. Try again.'
-  }
-  finally {
+  } finally {
     isClearingData.value = false
   }
 }
@@ -937,15 +942,13 @@ function calculateRecommendedGoals(input: {
       carbs: 0.45,
       fat: 0.25
     }))
-  }
-  else if (input.objective === 'gain') {
+  } else if (input.objective === 'gain') {
     ({ proteinGoal, carbsGoal, fatGoal } = macrosFromPercentSplit(dailyCalorieGoal, {
       protein: 0.20,
       carbs: 0.55,
       fat: 0.25
     }))
-  }
-  else if (input.objective === 'muscle') {
+  } else if (input.objective === 'muscle') {
     const fatGoalRaw = (dailyCalorieGoal * 0.25) / 9
     const baseProteinGoal = (dailyCalorieGoal * 0.25) / 4
     const proteinFloor = input.weightKg * 1.6
@@ -955,8 +958,7 @@ function calculateRecommendedGoals(input: {
     proteinGoal = Math.round(proteinGoalRaw)
     fatGoal = Math.round(fatGoalRaw)
     carbsGoal = Math.round(carbsCalories / 4)
-  }
-  else {
+  } else {
     ({ proteinGoal, carbsGoal, fatGoal } = macrosFromPercentSplit(dailyCalorieGoal, {
       protein: 0.20,
       carbs: 0.50,
@@ -983,15 +985,15 @@ function macrosFromPercentSplit(calories: number, split: { protein: number, carb
 function getActivityFactor(sex: RecommendationSex, activityLevel: RecommendationActivity) {
   const factors = sex === 'male'
     ? {
-        sedentary: 1.00,
+        'sedentary': 1.00,
         'low-active': 1.11,
-        active: 1.25,
+        'active': 1.25,
         'very-active': 1.48
       }
     : {
-        sedentary: 1.00,
+        'sedentary': 1.00,
         'low-active': 1.12,
-        active: 1.27,
+        'active': 1.27,
         'very-active': 1.45
       }
 
@@ -1449,18 +1451,12 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
                 >
                   Provider
                 </label>
-                <select
+                <USelect
                   id="ai-setup-provider"
                   v-model="aiSetupProvider"
-                  class="w-full rounded-[calc(var(--ui-radius)*1px)] border border-default bg-default px-3 py-2.5 text-sm text-highlighted outline-none ring-0 transition focus:border-primary"
-                >
-                  <option value="openai">
-                    OpenAI
-                  </option>
-                  <option value="anthropic">
-                    Anthropic
-                  </option>
-                </select>
+                  :items="AI_PROVIDER_OPTIONS"
+                  class="w-full"
+                />
               </div>
 
               <div class="space-y-2">
@@ -1628,18 +1624,12 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
               >
                 Provider
               </label>
-              <select
+              <USelect
                 id="ai-change-provider-select"
                 v-model="aiChangeProviderProvider"
-                class="w-full rounded-[calc(var(--ui-radius)*1px)] border border-default bg-default px-3 py-2.5 text-sm text-highlighted outline-none ring-0 transition focus:border-primary"
-              >
-                <option value="openai">
-                  OpenAI
-                </option>
-                <option value="anthropic">
-                  Anthropic
-                </option>
-              </select>
+                :items="AI_PROVIDER_OPTIONS"
+                class="w-full"
+              />
             </div>
           </div>
 
@@ -1839,18 +1829,12 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
               >
                 Sex
               </label>
-              <select
+              <USelect
                 id="rec-sex"
                 v-model="recommendationForm.sex"
-                class="w-full rounded-[calc(var(--ui-radius)*1px)] border border-default bg-default px-3 py-2.5 text-sm text-highlighted outline-none ring-0 transition focus:border-primary"
-              >
-                <option value="female">
-                  Female
-                </option>
-                <option value="male">
-                  Male
-                </option>
-              </select>
+                :items="RECOMMENDATION_SEX_OPTIONS"
+                class="w-full"
+              />
             </div>
 
             <div class="space-y-2">
@@ -1860,24 +1844,12 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
               >
                 Activity level
               </label>
-              <select
+              <USelect
                 id="rec-activity"
                 v-model="recommendationForm.activityLevel"
-                class="w-full rounded-[calc(var(--ui-radius)*1px)] border border-default bg-default px-3 py-2.5 text-sm text-highlighted outline-none ring-0 transition focus:border-primary"
-              >
-                <option value="sedentary">
-                  Sedentary
-                </option>
-                <option value="low-active">
-                  Low active
-                </option>
-                <option value="active">
-                  Active
-                </option>
-                <option value="very-active">
-                  Very active
-                </option>
-              </select>
+                :items="RECOMMENDATION_ACTIVITY_OPTIONS"
+                class="w-full"
+              />
             </div>
           </div>
 
@@ -1888,24 +1860,12 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
             >
               Objective
             </label>
-            <select
+            <USelect
               id="rec-objective"
               v-model="recommendationForm.objective"
-              class="w-full rounded-[calc(var(--ui-radius)*1px)] border border-default bg-default px-3 py-2.5 text-sm text-highlighted outline-none ring-0 transition focus:border-primary"
-            >
-              <option value="loss">
-                Weight loss
-              </option>
-              <option value="maintenance">
-                Maintenance
-              </option>
-              <option value="gain">
-                Weight gain
-              </option>
-              <option value="muscle">
-                Build muscle
-              </option>
-            </select>
+              :items="RECOMMENDATION_OBJECTIVE_OPTIONS"
+              class="w-full"
+            />
           </div>
 
           <p class="text-xs text-muted">

@@ -16,3 +16,20 @@
   --color-green-900: #0A5331;
   --color-green-950: #052E16;
 }
+
+/* Prevent iOS Safari from zooming form controls on focus (<16px triggers zoom). */
+@media (hover: none) and (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+.mobile-tabbar {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 40;
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}

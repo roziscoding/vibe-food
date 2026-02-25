@@ -99,18 +99,18 @@ export async function extractIngredientFromNutritionLabelImage(
 
   const rawText = input.provider === 'openai'
     ? await requestOpenAiJsonWithImage({
-      apiKey,
-      systemPrompt,
-      userPrompt,
-      imageDataUrl: input.imageDataUrl
-    })
+        apiKey,
+        systemPrompt,
+        userPrompt,
+        imageDataUrl: input.imageDataUrl
+      })
     : await requestAnthropicJsonWithImage({
-      apiKey,
-      systemPrompt,
-      userPrompt,
-      mimeType,
-      base64Data
-    })
+        apiKey,
+        systemPrompt,
+        userPrompt,
+        mimeType,
+        base64Data
+      })
 
   const parsed = parseJsonFromModelText(rawText)
   const normalized = normalizeExtractedIngredientPayload(parsed)
@@ -128,7 +128,7 @@ async function requestOpenAiJsonWithImage(input: {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${input.apiKey}`
+      'Authorization': `Bearer ${input.apiKey}`
     },
     body: JSON.stringify({
       model: OPENAI_MODEL,
@@ -267,8 +267,7 @@ function parseJsonFromModelText(text: string): unknown {
 
   try {
     return JSON.parse(normalized) as unknown
-  }
-  catch {
+  } catch {
     const start = normalized.indexOf('{')
     const end = normalized.lastIndexOf('}')
 
@@ -422,8 +421,7 @@ function titleCaseToken(token: string) {
 async function safeReadText(response: Response) {
   try {
     return await response.text()
-  }
-  catch {
+  } catch {
     return ''
   }
 }

@@ -170,7 +170,7 @@ async function requestOpenAiJson(input: {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${input.apiKey}`
+      'Authorization': `Bearer ${input.apiKey}`
     },
     body: JSON.stringify({
       model: OPENAI_MODEL,
@@ -269,8 +269,7 @@ function parseJsonFromModelText(text: string): AiGeneratedMealPayload {
 
   try {
     return JSON.parse(normalized) as AiGeneratedMealPayload
-  }
-  catch {
+  } catch {
     const start = normalized.indexOf('{')
     const end = normalized.lastIndexOf('}')
 
@@ -313,8 +312,7 @@ function normalizeAiGeneratedMealPayload(
 
   if (input.requestedMealName) {
     nextPayload.meal_name = input.requestedMealName
-  }
-  else if (typeof nextPayload.meal_name === 'string') {
+  } else if (typeof nextPayload.meal_name === 'string') {
     nextPayload.meal_name = normalizeSuggestedMealName(nextPayload.meal_name)
   }
 
@@ -408,8 +406,7 @@ function validateAiGeneratedMealPayload(value: unknown): asserts value is AiGene
 async function safeReadText(response: Response) {
   try {
     return await response.text()
-  }
-  catch {
+  } catch {
     return ''
   }
 }

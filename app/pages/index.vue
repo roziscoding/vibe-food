@@ -147,11 +147,9 @@ onMounted(async () => {
     proteinGoal.value = settings.proteinGoal
     carbsGoal.value = settings.carbsGoal
     fatGoal.value = settings.fatGoal
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to load dashboard data from IndexedDB', error)
-  }
-  finally {
+  } finally {
     isLoaded.value = true
   }
 })
@@ -160,8 +158,7 @@ async function loadMealsFromDb(): Promise<MealEntry[]> {
   try {
     const parsed = await readClientCollection<unknown>(MEALS_COLLECTION_KEY)
     return parsed.flatMap(normalizeMeal)
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to read meals from IndexedDB', error)
     return []
   }

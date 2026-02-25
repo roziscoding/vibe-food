@@ -171,8 +171,7 @@ watch(isAiUnlockModalOpen, (isOpen) => {
 async function persistIngredientsToDb(value: IngredientEntry[]) {
   try {
     await writeClientCollection(INGREDIENTS_COLLECTION_KEY, value)
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to persist ingredients to IndexedDB', error)
   }
 }
@@ -188,8 +187,7 @@ async function copyIngredientExportJson() {
 
     await navigator.clipboard.writeText(ingredientExportJson.value)
     exportCopyNotice.value = 'Export JSON copied.'
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to copy ingredient export JSON', error)
     exportCopyError.value = 'Could not copy to clipboard.'
   }
@@ -218,6 +216,10 @@ function openEditIngredientModal(ingredient: IngredientEntry) {
 
 function closeIngredientEditorModal() {
   isIngredientEditorModalOpen.value = false
+}
+
+function updateIngredientEditorForm(nextForm: IngredientFormState) {
+  Object.assign(ingredientEditorForm, nextForm)
 }
 
 function resetIngredientEditorModal() {
@@ -259,11 +261,6 @@ function submitIngredientEditor() {
 
 function removeIngredient(id: string) {
   ingredients.value = ingredients.value.filter(ingredient => ingredient.id !== id)
-}
-
-function openImportIngredientModal() {
-  resetImportIngredientModal()
-  isImportIngredientModalOpen.value = true
 }
 
 function closeImportIngredientModal() {
@@ -350,11 +347,9 @@ async function submitAiUnlock() {
     isAiIntegrationUnlockedForSession.value = true
     closeAiUnlockModal()
     openAiImportIngredientModal()
-  }
-  catch (error) {
+  } catch (error) {
     aiUnlockError.value = error instanceof Error ? error.message : 'Could not unlock AI integration.'
-  }
-  finally {
+  } finally {
     isUnlockingAiIntegration.value = false
   }
 }
@@ -362,8 +357,7 @@ async function submitAiUnlock() {
 async function refreshAiIntegrationAvailability() {
   try {
     aiIntegration.value = await readAiIntegrationMetadata()
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to read AI integration metadata from IndexedDB', error)
     aiIntegration.value = null
   }
@@ -392,12 +386,10 @@ async function handleAiNutritionImageChange(event: Event) {
   try {
     aiNutritionImageDataUrl.value = await readFileAsDataUrl(file)
     aiNutritionImageFileName.value = file.name
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to read nutrition label image', error)
     aiIngredientImportError.value = 'Could not read the selected image.'
-  }
-  finally {
+  } finally {
     if (input) {
       input.value = ''
     }
@@ -420,8 +412,7 @@ async function analyzeNutritionLabelWithAi() {
     closeAiImportIngredientModal()
     if (aiIntegration.value) {
       openAiUnlockModal()
-    }
-    else {
+    } else {
       aiAvailabilityMode.value = 'missing'
       isAiKeyMissingModalOpen.value = true
     }
@@ -447,8 +438,7 @@ async function analyzeNutritionLabelWithAi() {
       carbs: payload.macros_per_portion.carbohydrates_g,
       fat: payload.macros_per_portion.total_fat_g
     })
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to extract ingredient from nutrition label image', error)
     const message = error instanceof Error ? error.message : 'Unknown error'
 
@@ -458,8 +448,7 @@ async function analyzeNutritionLabelWithAi() {
     }
 
     aiIngredientImportError.value = message
-  }
-  finally {
+  } finally {
     isAnalyzingIngredientImage.value = false
   }
 }
@@ -498,8 +487,7 @@ function parseImportIngredientJson() {
 
   try {
     parsed = JSON.parse(normalizeJsonText(jsonInput))
-  }
-  catch {
+  } catch {
     importIngredientError.value = 'The pasted text is not valid JSON.'
     return
   }
@@ -711,8 +699,7 @@ async function loadIngredientsFromDb(): Promise<IngredientEntry[]> {
   try {
     const parsed = await readClientCollection<unknown>(INGREDIENTS_COLLECTION_KEY)
     return parsed.flatMap(normalizeIngredient)
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to read ingredients from IndexedDB', error)
     return []
   }
@@ -810,8 +797,7 @@ function createUuid() {
 
   if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.getRandomValues === 'function') {
     globalThis.crypto.getRandomValues(bytes)
-  }
-  else {
+  } else {
     for (let index = 0; index < bytes.length; index += 1) {
       bytes[index] = Math.floor(Math.random() * 256)
     }
@@ -849,7 +835,7 @@ function readFileAsDataUrl(file: File) {
 
 <template>
   <div class="flex w-full max-w-5xl flex-col gap-6">
-    <header class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+    <header class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight text-highlighted sm:text-3xl">
           Ingredients
@@ -859,7 +845,7 @@ function readFileAsDataUrl(file: File) {
         </p>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
         <UButton
           type="button"
           color="neutral"
@@ -867,6 +853,7 @@ function readFileAsDataUrl(file: File) {
           size="sm"
           icon="i-lucide-camera"
           :disabled="!storageLoaded"
+          class="w-full justify-center sm:w-auto"
           @click="openAiImportIngredientFlow"
         >
           Scan Label
@@ -878,6 +865,7 @@ function readFileAsDataUrl(file: File) {
           variant="solid"
           size="sm"
           icon="i-lucide-plus"
+          class="w-full justify-center sm:w-auto"
           @click="openCreateIngredientModal()"
         >
           Add ingredient
@@ -888,7 +876,7 @@ function readFileAsDataUrl(file: File) {
     <section>
       <UCard>
         <div class="space-y-4">
-          <div class="flex items-center justify-between gap-4">
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 class="text-lg font-semibold text-highlighted">
                 Ingredient list
@@ -947,11 +935,12 @@ function readFileAsDataUrl(file: File) {
                   </p>
                 </div>
 
-                <div class="flex items-center gap-1">
+                <div class="flex w-full flex-wrap items-center gap-1 sm:w-auto">
                   <UButton
                     color="neutral"
                     variant="ghost"
                     size="sm"
+                    class="flex-1 justify-center sm:flex-none"
                     @click="openEditIngredientModal(ingredient)"
                   >
                     Edit
@@ -961,6 +950,7 @@ function readFileAsDataUrl(file: File) {
                     color="neutral"
                     variant="ghost"
                     size="sm"
+                    class="flex-1 justify-center sm:flex-none"
                     @click="removeIngredient(ingredient.id)"
                   >
                     Remove
@@ -1014,13 +1004,13 @@ function readFileAsDataUrl(file: File) {
             >
               JSON payload
             </label>
-            <textarea
+            <UTextarea
               id="import-ingredient-json"
               v-model="importIngredientJson"
-              rows="12"
+              :rows="12"
               spellcheck="false"
               placeholder="{&quot;product_name&quot;: ...}"
-              class="w-full rounded-[calc(var(--ui-radius)*1px)] border border-default bg-default px-3 py-2.5 text-sm text-highlighted outline-none ring-0 transition focus:border-primary"
+              class="w-full"
             />
           </div>
 
@@ -1057,6 +1047,7 @@ function readFileAsDataUrl(file: File) {
       :mode="ingredientEditorMode"
       :form="ingredientEditorForm"
       :error="ingredientEditorError"
+      @update:form="updateIngredientEditorForm"
       @cancel="closeIngredientEditorModal"
       @submit="submitIngredientEditor"
     />
@@ -1241,13 +1232,13 @@ function readFileAsDataUrl(file: File) {
               >
                 Nutrition facts image
               </label>
-              <input
+              <UInput
                 id="ai-nutrition-label-image"
                 type="file"
                 accept="image/*"
-                class="block w-full rounded-[calc(var(--ui-radius)*1px)] border border-default bg-default px-3 py-2 text-sm text-highlighted file:mr-3 file:rounded-md file:border-0 file:bg-primary/10 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-primary"
+                class="w-full"
                 @change="handleAiNutritionImageChange"
-              >
+              />
               <p
                 v-if="aiNutritionImageFileName"
                 class="text-xs text-muted"

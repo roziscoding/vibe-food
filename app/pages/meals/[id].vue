@@ -154,6 +154,13 @@ const ingredientsByUuid = computed(() => {
   )
 })
 
+const ingredientSelectOptions = computed(() => {
+  return sortedIngredients.value.map(ingredient => ({
+    label: ingredientOptionLabel(ingredient),
+    value: ingredient.id
+  }))
+})
+
 const routeMealId = computed(() => {
   const value = route.params.id
 
@@ -169,14 +176,6 @@ const routeMealId = computed(() => {
 })
 
 const isEditingExistingMeal = computed(() => pageMode.value === 'edit' && !!editingMealId.value)
-
-const selectedExistingMeal = computed(() => {
-  if (!editingMealId.value) {
-    return null
-  }
-
-  return meals.value.find(meal => meal.id === editingMealId.value) ?? null
-})
 
 const pageTitle = computed(() => {
   if (pageMode.value === 'new') {
@@ -530,8 +529,7 @@ function initExistingMealMode(mealId: string) {
   if (meal.ingredients.length > 0 && matchedRows.length === meal.ingredients.length) {
     form.entryMode = 'ingredients'
     mealIngredientRows.value = matchedRows
-  }
-  else {
+  } else {
     form.entryMode = 'manual'
     mealIngredientRows.value = [createMealIngredientRow()]
   }
@@ -541,7 +539,7 @@ function mapSnapshotsToIngredientRows(snapshots: MealIngredientSnapshot[]) {
   const rows: MealIngredientRow[] = []
 
   for (const snapshot of snapshots) {
-    const match = allIngredients.value.find(ingredient => {
+    const match = allIngredients.value.find((ingredient) => {
       return ingredient.name.trim().toLocaleLowerCase() === snapshot.name.trim().toLocaleLowerCase()
         && ingredient.unit.trim().toLocaleLowerCase() === snapshot.unit.trim().toLocaleLowerCase()
     })
@@ -595,8 +593,7 @@ function parseImportedPayloadFromJson(jsonInput: string):
 
   try {
     parsed = JSON.parse(trimmed)
-  }
-  catch {
+  } catch {
     return { ok: false, error: 'The import draft is not valid JSON.' }
   }
 
@@ -673,8 +670,7 @@ async function saveMeal() {
     carbs = manualCarbs
     fat = manualFat
     ingredientSnapshots = isEditingExistingMeal.value ? [...preservedManualSnapshots.value] : []
-  }
-  else {
+  } else {
     if (!hasIngredients.value) {
       formError.value = 'Save at least one ingredient first.'
       return
@@ -795,12 +791,10 @@ async function saveMeal() {
         date: formDate.value
       }
     })
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to save meal', error)
     saveError.value = 'Failed to save meal. Try again.'
-  }
-  finally {
+  } finally {
     isSaving.value = false
   }
 }
@@ -971,8 +965,7 @@ function createUuid() {
 
   if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.getRandomValues === 'function') {
     globalThis.crypto.getRandomValues(bytes)
-  }
-  else {
+  } else {
     for (let index = 0; index < bytes.length; index += 1) {
       bytes[index] = Math.floor(Math.random() * 256)
     }
@@ -1040,8 +1033,7 @@ async function loadMealsFromDb(): Promise<MealEntry[]> {
   try {
     const parsed = await readClientCollection<unknown>(MEALS_COLLECTION_KEY)
     return parsed.flatMap(normalizeMeal)
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to read meals from IndexedDB', error)
     return []
   }
@@ -1051,8 +1043,7 @@ async function loadIngredientsFromDb(): Promise<IngredientReference[]> {
   try {
     const parsed = await readClientCollection<unknown>(INGREDIENTS_COLLECTION_KEY)
     return parsed.flatMap(normalizeIngredient)
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to read ingredients from IndexedDB', error)
     return []
   }
@@ -1217,12 +1208,13 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
         </p>
       </div>
 
-      <div class="flex items-center justify-end gap-2">
+      <div class="flex w-full items-center justify-end gap-2 sm:w-auto">
         <UButton
           type="button"
           color="neutral"
           variant="ghost"
           icon="i-lucide-arrow-left"
+          class="w-full justify-center sm:w-auto"
           @click="cancelEditor"
         >
           Back to meals
@@ -1601,22 +1593,13 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
                   >
                     Ingredient {{ rowIndex + 1 }}
                   </label>
-                  <select
+                  <USelect
                     :id="`meal-editor-ingredient-${row.id}`"
                     v-model="row.ingredientId"
-                    class="w-full rounded-[calc(var(--ui-radius)*1px)] border border-default bg-default px-3 py-2.5 text-sm text-highlighted outline-none ring-0 transition focus:border-primary"
-                  >
-                    <option value="">
-                      Select an ingredient
-                    </option>
-                    <option
-                      v-for="ingredient in sortedIngredients"
-                      :key="ingredient.id"
-                      :value="ingredient.id"
-                    >
-                      {{ ingredientOptionLabel(ingredient) }}
-                    </option>
-                  </select>
+                    :items="ingredientSelectOptions"
+                    placeholder="Select an ingredient"
+                    class="w-full"
+                  />
                 </div>
 
                 <div class="space-y-2">
@@ -1635,12 +1618,13 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
                   />
                 </div>
 
-                <div class="flex justify-end md:justify-start">
+                <div class="flex justify-stretch md:justify-start">
                   <UButton
                     type="button"
                     color="neutral"
                     variant="ghost"
                     size="sm"
+                    class="w-full justify-center md:w-auto"
                     @click="removeMealIngredientRow(row.id)"
                   >
                     Remove

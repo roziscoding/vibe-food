@@ -20,9 +20,31 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   'update:open': [value: boolean]
-  submit: []
-  cancel: []
+  'update:form': [value: IngredientFormState]
+  'submit': []
+  'cancel': []
 }>()
+
+const localForm = reactive<IngredientFormState>({
+  name: '',
+  portionSize: '',
+  unit: '',
+  kcal: '',
+  protein: '',
+  carbs: '',
+  fat: ''
+})
+
+watch(() => props.form, (value) => {
+  Object.assign(localForm, value)
+}, {
+  deep: true,
+  immediate: true
+})
+
+watch(localForm, (value) => {
+  emit('update:form', { ...value })
+}, { deep: true })
 
 const openModel = computed({
   get: () => props.open,
@@ -73,7 +95,7 @@ function handleSubmit() {
             </label>
             <UInput
               id="ingredient-editor-name"
-              v-model="props.form.name"
+              v-model="localForm.name"
               placeholder="e.g. Rolled oats"
               size="lg"
             />
@@ -88,7 +110,7 @@ function handleSubmit() {
             </label>
             <UInput
               id="ingredient-editor-portion-size"
-              v-model="props.form.portionSize"
+              v-model="localForm.portionSize"
               type="number"
               min="0"
               step="0.01"
@@ -107,7 +129,7 @@ function handleSubmit() {
             </label>
             <UInput
               id="ingredient-editor-unit"
-              v-model="props.form.unit"
+              v-model="localForm.unit"
               placeholder="g"
               size="lg"
             />
@@ -124,7 +146,7 @@ function handleSubmit() {
             </label>
             <UInput
               id="ingredient-editor-kcal"
-              v-model="props.form.kcal"
+              v-model="localForm.kcal"
               type="number"
               min="0"
               step="1"
@@ -143,7 +165,7 @@ function handleSubmit() {
             </label>
             <UInput
               id="ingredient-editor-protein"
-              v-model="props.form.protein"
+              v-model="localForm.protein"
               type="number"
               min="0"
               step="0.1"
@@ -162,7 +184,7 @@ function handleSubmit() {
             </label>
             <UInput
               id="ingredient-editor-carbs"
-              v-model="props.form.carbs"
+              v-model="localForm.carbs"
               type="number"
               min="0"
               step="0.1"
@@ -181,7 +203,7 @@ function handleSubmit() {
             </label>
             <UInput
               id="ingredient-editor-fat"
-              v-model="props.form.fat"
+              v-model="localForm.fat"
               type="number"
               min="0"
               step="0.1"

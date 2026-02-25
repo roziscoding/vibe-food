@@ -1,20 +1,20 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
-  ssr: false,
-  devServer: {
-    port: 3123
-  },
 
   modules: [
     '@nuxt/eslint',
     '@nuxt/ui'
   ],
+  ssr: false,
 
   devtools: {
     enabled: true
   },
 
   css: ['~/assets/css/main.css'],
+  devServer: {
+    port: 3123
+  },
 
   compatibilityDate: '2025-01-15',
 

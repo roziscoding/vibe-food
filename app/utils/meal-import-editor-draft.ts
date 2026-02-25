@@ -38,8 +38,7 @@ export function readMealImportEditorDraft(): MealImportEditorDraft | null {
       source,
       updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString()
     }
-  }
-  catch {
+  } catch {
     return null
   }
 }

@@ -302,8 +302,7 @@ async function decryptApiKey(record: StoredAiIntegrationV1, pin: string): Promis
     }
 
     return apiKey
-  }
-  catch {
+  } catch {
     throw new Error('Invalid encryption password.')
   }
 }

@@ -70,27 +70,6 @@ type MealFormState = {
   entryMode: MealEntryMode
 }
 
-type ImportedMealMatch = {
-  ingredient_id: string
-  amount: number
-}
-
-type ImportedMealPayload = {
-  matched_ingredients: ImportedMealMatch[]
-  new_ingredients?: ImportedNewIngredient[]
-}
-
-type ImportedNewIngredient = {
-  name: string
-  unit: string
-  portion_size: number
-  calories: number
-  carbs: number
-  proteins?: number
-  protein?: number
-  fat: number
-}
-
 const MEALS_COLLECTION_KEY = 'meals'
 const INGREDIENTS_COLLECTION_KEY = 'ingredients'
 
@@ -134,7 +113,6 @@ const form = reactive<MealFormState>({
 const mealIngredientRows = ref<MealIngredientRow[]>([createMealIngredientRow()])
 const route = useRoute()
 
-const todayKey = computed(() => toLocalDateKey(new Date()))
 const selectedDate = computed(() => {
   const date = new Date()
   date.setHours(0, 0, 0, 0)
@@ -159,61 +137,6 @@ const totalCaloriesToday = computed(() => {
   return todayMeals.value.reduce((total, meal) => total + meal.calories, 0)
 })
 
-const totalMacrosToday = computed(() => {
-  return todayMeals.value.reduce((totals, meal) => {
-    totals.protein += meal.protein
-    totals.carbs += meal.carbs
-    totals.fat += meal.fat
-
-    return totals
-  }, {
-    protein: 0,
-    carbs: 0,
-    fat: 0
-  })
-})
-
-const macroBarTotal = computed(() => {
-  return totalMacrosToday.value.protein + totalMacrosToday.value.carbs + totalMacrosToday.value.fat
-})
-
-const macroBarSegments = computed(() => {
-  const total = macroBarTotal.value
-  const macros = [
-    { key: 'protein', label: 'Protein', short: 'P', value: totalMacrosToday.value.protein, colorClass: 'bg-primary' },
-    { key: 'carbs', label: 'Carbs', short: 'C', value: totalMacrosToday.value.carbs, colorClass: 'bg-info' },
-    { key: 'fat', label: 'Fat', short: 'F', value: totalMacrosToday.value.fat, colorClass: 'bg-warning' }
-  ] as const
-
-  if (total <= 0) {
-    return macros.map(macro => ({
-      ...macro,
-      percent: 0
-    }))
-  }
-
-  return macros.map(macro => ({
-    ...macro,
-    percent: (macro.value / total) * 100
-  }))
-})
-
-const progressPercent = computed(() => {
-  if (dailyCalorieGoal.value <= 0) {
-    return 0
-  }
-
-  return Math.min(100, Math.round((totalCaloriesToday.value / dailyCalorieGoal.value) * 100))
-})
-
-const remainingCalories = computed(() => {
-  return Math.max(0, dailyCalorieGoal.value - totalCaloriesToday.value)
-})
-
-const calorieGaugeColor = computed(() => {
-  return totalCaloriesToday.value > dailyCalorieGoal.value ? '#f59e0b' : '#22c55e'
-})
-
 const sortedIngredients = computed(() => {
   return [...ingredients.value].sort((a, b) => a.name.localeCompare(b.name))
 })
@@ -222,12 +145,11 @@ const ingredientsById = computed(() => {
   return new Map(sortedIngredients.value.map(ingredient => [ingredient.id, ingredient]))
 })
 
-const ingredientsByUuid = computed(() => {
-  return new Map(
-    sortedIngredients.value
-      .filter(ingredient => ingredient.uuid.trim().length > 0)
-      .map(ingredient => [ingredient.uuid, ingredient])
-  )
+const ingredientSelectOptions = computed(() => {
+  return sortedIngredients.value.map(ingredient => ({
+    label: ingredientOptionLabel(ingredient),
+    value: ingredient.id
+  }))
 })
 
 const selectedAiProvider = computed<AiProvider>(() => {
@@ -344,8 +266,7 @@ watch(isMealDataReady, (ready) => {
 async function persistMealsToDb(value: MealEntry[]) {
   try {
     await writeClientCollection(MEALS_COLLECTION_KEY, value)
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to persist meals to IndexedDB', error)
   }
 }
@@ -353,8 +274,7 @@ async function persistMealsToDb(value: MealEntry[]) {
 async function persistIngredientsToDb(value: IngredientReference[]) {
   try {
     await writeClientCollection(INGREDIENTS_COLLECTION_KEY, value)
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to persist imported ingredients to IndexedDB', error)
   }
 }
@@ -409,8 +329,7 @@ function addMeal() {
     protein = manualProtein
     carbs = manualCarbs
     fat = manualFat
-  }
-  else {
+  } else {
     if (!hasIngredients.value) {
       formError.value = 'Save at least one ingredient first.'
       return
@@ -539,11 +458,6 @@ function cancelAddMeal() {
   isAddMealOpen.value = false
 }
 
-function openImportMealModal() {
-  importMealError.value = ''
-  isImportMealModalOpen.value = true
-}
-
 async function openAiImportMealFlow() {
   if (!isMealDataReady.value) {
     formError.value = 'Meals and ingredients are still loading. Try again in a moment.'
@@ -594,8 +508,7 @@ async function consumeComposeQueryFromRoute() {
       path: '/meals',
       query: nextQuery
     }, { replace: true })
-  }
-  finally {
+  } finally {
     isConsumingComposeQuery.value = false
   }
 }
@@ -649,12 +562,10 @@ async function submitAiUnlock() {
     isAiIntegrationUnlockedForSession.value = true
     closeAiUnlockModal()
     openAiImportMealModal()
-  }
-  catch (error) {
+  } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to unlock AI integration.'
     aiUnlockError.value = message
-  }
-  finally {
+  } finally {
     isUnlockingAiIntegration.value = false
   }
 }
@@ -693,8 +604,7 @@ async function generateMealImportJsonWithAi() {
     closeAiImportMealModal()
     if (aiIntegration.value) {
       openAiUnlockModal()
-    }
-    else {
+    } else {
       aiAvailabilityMode.value = 'missing'
       isAiKeyMissingModalOpen.value = true
     }
@@ -728,8 +638,7 @@ async function generateMealImportJsonWithAi() {
       source: 'ai'
     })
     closeAiImportMealModal()
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to generate meal JSON with AI', error)
     const message = error instanceof Error ? error.message : 'Unknown error'
 
@@ -739,8 +648,7 @@ async function generateMealImportJsonWithAi() {
     }
 
     aiImportError.value = message
-  }
-  finally {
+  } finally {
     isGeneratingAiImport.value = false
   }
 }
@@ -748,8 +656,7 @@ async function generateMealImportJsonWithAi() {
 async function refreshAiIntegrationAvailability() {
   try {
     aiIntegration.value = await readAiIntegrationMetadata()
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to read AI integration metadata from IndexedDB', error)
     aiIntegration.value = null
   }
@@ -779,14 +686,6 @@ function importMealFromJson() {
   })
 
   closeImportMealModal()
-}
-
-function openMealImportEditor() {
-  openMealImportEditorFromJson({
-    mealName: 'Imported meal',
-    json: '',
-    source: 'manual'
-  })
 }
 
 function openMealImportEditorFromJson(input: {
@@ -871,57 +770,6 @@ function formatAmount(value: number) {
   }).format(roundToThree(value))
 }
 
-function createImportedIngredient(value: Partial<ImportedNewIngredient>): IngredientReference | null {
-  const name = typeof value.name === 'string' ? value.name.trim() : ''
-  const unit = typeof value.unit === 'string' ? value.unit.trim() : ''
-  const portionSize = value.portion_size
-  const calories = value.calories
-  const proteinValue = value.proteins ?? value.protein
-  const carbs = value.carbs
-  const fat = value.fat
-
-  if (!name || !unit) {
-    return null
-  }
-
-  if (
-    typeof portionSize !== 'number'
-    || !Number.isFinite(portionSize)
-    || portionSize <= 0
-    || typeof calories !== 'number'
-    || !Number.isFinite(calories)
-    || calories < 0
-    || typeof proteinValue !== 'number'
-    || !Number.isFinite(proteinValue)
-    || proteinValue < 0
-    || typeof carbs !== 'number'
-    || !Number.isFinite(carbs)
-    || carbs < 0
-    || typeof fat !== 'number'
-    || !Number.isFinite(fat)
-    || fat < 0
-  ) {
-    return null
-  }
-
-  return {
-    id: createIngredientLocalId(),
-    uuid: createUuid(),
-    name,
-    unit,
-    portionSize,
-    kcal: Math.round(calories),
-    protein: roundToOne(proteinValue),
-    carbs: roundToOne(carbs),
-    fat: roundToOne(fat),
-    kcalPerUnit: roundToSix(calories / portionSize),
-    proteinPerUnit: roundToSix(proteinValue / portionSize),
-    carbsPerUnit: roundToSix(carbs / portionSize),
-    fatPerUnit: roundToSix(fat / portionSize),
-    createdAt: new Date().toISOString()
-  }
-}
-
 function parseFlexibleDecimal(value: string | number) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : null
@@ -990,40 +838,11 @@ function createMealId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function createIngredientLocalId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-}
-
-function createUuid() {
-  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID()
-  }
-
-  const bytes = new Uint8Array(16)
-
-  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.getRandomValues === 'function') {
-    globalThis.crypto.getRandomValues(bytes)
-  }
-  else {
-    for (let index = 0; index < bytes.length; index += 1) {
-      bytes[index] = Math.floor(Math.random() * 256)
-    }
-  }
-
-  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40
-  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80
-
-  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
-
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
-}
-
 async function loadMealsFromDb(): Promise<MealEntry[]> {
   try {
     const parsed = await readClientCollection<unknown>(MEALS_COLLECTION_KEY)
     return parsed.flatMap(normalizeMeal)
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to read meals from IndexedDB', error)
     return []
   }
@@ -1096,8 +915,7 @@ async function loadIngredientsFromDb(): Promise<IngredientReference[]> {
   try {
     const parsed = await readClientCollection<unknown>(INGREDIENTS_COLLECTION_KEY)
     return parsed.flatMap(normalizeIngredient)
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to read ingredients from IndexedDB', error)
     return []
   }
@@ -1106,8 +924,7 @@ async function loadIngredientsFromDb(): Promise<IngredientReference[]> {
 async function loadSettingsFromDb(): Promise<AppSettings> {
   try {
     return await readAppSettings()
-  }
-  catch (error) {
+  } catch (error) {
     console.error('Failed to read settings from IndexedDB', error)
     return {
       dailyCalorieGoal: DEFAULT_DAILY_CALORIE_GOAL,
@@ -1212,7 +1029,7 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
         </p>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
         <UButton
           type="button"
           color="neutral"
@@ -1220,6 +1037,7 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
           size="sm"
           icon="i-lucide-sparkles"
           :disabled="!isMealDataReady"
+          class="w-full justify-center sm:w-auto"
           @click="openAiImportMealFlow"
         >
           Log with AI
@@ -1232,6 +1050,7 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
           size="sm"
           :disabled="!isMealDataReady"
           icon="i-lucide-plus"
+          class="w-full justify-center sm:w-auto"
           @click="navigateTo({ path: '/meals/new', query: { date: selectedDateKey } })"
         >
           {{ !isMealDataReady ? 'Loading...' : 'Log meal' }}
@@ -1456,22 +1275,13 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
                       >
                         Ingredient {{ index + 1 }}
                       </label>
-                      <select
+                      <USelect
                         :id="`meal-ingredient-${row.id}`"
                         v-model="row.ingredientId"
-                        class="w-full rounded-[calc(var(--ui-radius)*1px)] border border-default bg-default px-3 py-2.5 text-sm text-highlighted outline-none ring-0 transition focus:border-primary"
-                      >
-                        <option value="">
-                          Select ingredient
-                        </option>
-                        <option
-                          v-for="ingredient in sortedIngredients"
-                          :key="ingredient.id"
-                          :value="ingredient.id"
-                        >
-                          {{ ingredientOptionLabel(ingredient) }}
-                        </option>
-                      </select>
+                        :items="ingredientSelectOptions"
+                        placeholder="Select ingredient"
+                        class="w-full"
+                      />
                     </div>
 
                     <div class="space-y-2">
@@ -1495,7 +1305,7 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
                       color="neutral"
                       variant="ghost"
                       size="sm"
-                      class="justify-center sm:mb-0.5"
+                      class="w-full justify-center sm:mb-0.5 sm:w-auto"
                       @click="removeMealIngredientRow(row.id)"
                     >
                       Remove
@@ -1574,7 +1384,7 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
 
     <UCard>
       <div class="space-y-4">
-        <div class="flex items-center justify-between gap-4">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h2 class="text-lg font-semibold text-highlighted">
               Meal log
@@ -1584,7 +1394,7 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
             </p>
           </div>
 
-          <div class="flex flex-wrap items-center justify-end gap-2">
+          <div class="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
             <UButton
               type="button"
               size="sm"
@@ -1623,6 +1433,7 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
             <UBadge
               color="neutral"
               variant="subtle"
+              class="order-last sm:order-none"
             >
               {{ todayLabel }}
             </UBadge>
@@ -1720,14 +1531,15 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
               </div>
             </div>
 
-            <div class="flex items-center gap-3 self-end sm:self-auto">
-              <p class="text-sm font-semibold tabular-nums text-highlighted sm:text-base">
+            <div class="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end sm:gap-3">
+              <p class="mr-auto text-sm font-semibold tabular-nums text-highlighted sm:mr-0 sm:text-base">
                 {{ meal.calories.toLocaleString() }} kcal
               </p>
               <UButton
                 color="neutral"
                 variant="ghost"
                 size="sm"
+                class="flex-1 justify-center sm:flex-none"
                 @click="openExistingMealEditor(meal.id)"
               >
                 Edit
@@ -1736,6 +1548,7 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
                 color="neutral"
                 variant="ghost"
                 size="sm"
+                class="flex-1 justify-center sm:flex-none"
                 @click="removeMeal(meal.id)"
               >
                 Remove
@@ -1887,13 +1700,13 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
             >
               Meal description
             </label>
-            <textarea
+            <UTextarea
               id="ai-import-description"
               v-model="aiImportDescription"
-              rows="6"
+              :rows="6"
               spellcheck="false"
               placeholder="e.g. 2 slices of bread, 2 eggs, 1.5 slices ham, mayo"
-              class="w-full rounded-[calc(var(--ui-radius)*1px)] border border-default bg-default px-3 py-2.5 text-sm text-highlighted outline-none ring-0 transition focus:border-primary"
+              class="w-full"
             />
           </div>
 
@@ -1964,13 +1777,13 @@ function normalizeIngredient(value: unknown): IngredientReference[] {
             >
               JSON payload
             </label>
-            <textarea
+            <UTextarea
               id="import-meal-json"
               v-model="importMealJson"
-              rows="12"
+              :rows="12"
               spellcheck="false"
               placeholder="{&quot;matched_ingredients&quot;:[...]}"
-              class="w-full rounded-[calc(var(--ui-radius)*1px)] border border-default bg-default px-3 py-2.5 text-sm text-highlighted outline-none ring-0 transition focus:border-primary"
+              class="w-full"
             />
           </div>
 
