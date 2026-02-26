@@ -69,7 +69,8 @@ export default defineNuxtConfig({
     workbox: {
       navigateFallback: '/',
       cleanupOutdatedCaches: true,
-      globPatterns: ['**/*.{js,css,html,ico,png,svg,json,webp,woff2}']
+      globPatterns: ['**/*.{js,css,html,ico,png,svg,json,webp,woff2}'],
+      globIgnores: ['**/pwa/icon-source.png']
     },
     devOptions: {
       enabled: false
