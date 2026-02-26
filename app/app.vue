@@ -1,10 +1,16 @@
 <script setup lang="ts">
 useHead({
   meta: [
-    { name: 'viewport', content: 'width=device-width, initial-scale=1, maximum-scale=1' }
+    { name: 'viewport', content: 'width=device-width, initial-scale=1, maximum-scale=1' },
+    { name: 'theme-color', content: '#00C16A' },
+    { name: 'apple-mobile-web-app-capable', content: 'yes' },
+    { name: 'apple-mobile-web-app-status-bar-style', content: 'default' },
+    { name: 'apple-mobile-web-app-title', content: 'Vibe Food' },
+    { name: 'mobile-web-app-capable', content: 'yes' }
   ],
   link: [
-    { rel: 'icon', href: '/favicon.ico' }
+    { rel: 'icon', href: '/favicon.ico' },
+    { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' }
   ],
   htmlAttrs: {
     lang: 'en'
