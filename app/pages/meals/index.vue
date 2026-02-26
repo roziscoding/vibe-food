@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { readClientCollection, writeClientCollection } from '../../utils/client-db'
 import { generateAiMealImportPayload } from '../../utils/ai-meal-import'
 import {
   getUnlockedAiIntegration,
@@ -7,6 +6,10 @@ import {
   readAiIntegrationMetadata,
   unlockAiIntegration
 } from '../../utils/client-ai-integration'
+import { readIngredients, writeIngredients } from '../../utils/db/repos/ingredients'
+import type { IngredientRecord } from '../../utils/db/repos/ingredients'
+import { readMeals, writeMeals } from '../../utils/db/repos/meals'
+import type { MealIngredientSnapshotRecord, MealRecord } from '../../utils/db/repos/meals'
 import { writeMealImportEditorDraft } from '../../utils/meal-import-editor-draft'
 import { MACRO_COLORS } from '../../utils/nutrition-colors'
 import {
@@ -21,39 +24,9 @@ import type { AiProvider, AppSettings } from '../../utils/client-settings'
 
 type MealEntryMode = 'manual' | 'ingredients'
 
-interface MealIngredientSnapshot {
-  name: string
-  amount: number
-  unit: string
-}
-
-interface MealEntry {
-  id: string
-  name: string
-  calories: number
-  protein: number
-  carbs: number
-  fat: number
-  ingredients: MealIngredientSnapshot[]
-  createdAt: string
-}
-
-interface IngredientReference {
-  id: string
-  uuid: string
-  name: string
-  unit: string
-  portionSize: number
-  kcal: number
-  protein: number
-  carbs: number
-  fat: number
-  kcalPerUnit: number
-  proteinPerUnit: number
-  carbsPerUnit: number
-  fatPerUnit: number
-  createdAt: string
-}
+type MealIngredientSnapshot = MealIngredientSnapshotRecord
+type MealEntry = MealRecord
+type IngredientReference = IngredientRecord
 
 interface MealIngredientRow {
   id: string
@@ -69,9 +42,6 @@ type MealFormState = {
   fat: string
   entryMode: MealEntryMode
 }
-
-const MEALS_COLLECTION_KEY = 'meals'
-const INGREDIENTS_COLLECTION_KEY = 'ingredients'
 
 const meals = ref<MealEntry[]>([])
 const ingredients = ref<IngredientReference[]>([])
@@ -265,7 +235,7 @@ watch(isMealDataReady, (ready) => {
 
 async function persistMealsToDb(value: MealEntry[]) {
   try {
-    await writeClientCollection(MEALS_COLLECTION_KEY, value)
+    await writeMeals(value)
   } catch (error) {
     console.error('Failed to persist meals to IndexedDB', error)
   }
@@ -273,7 +243,7 @@ async function persistMealsToDb(value: MealEntry[]) {
 
 async function persistIngredientsToDb(value: IngredientReference[]) {
   try {
-    await writeClientCollection(INGREDIENTS_COLLECTION_KEY, value)
+    await writeIngredients(value)
   } catch (error) {
     console.error('Failed to persist imported ingredients to IndexedDB', error)
   }
@@ -840,81 +810,16 @@ function createMealId() {
 
 async function loadMealsFromDb(): Promise<MealEntry[]> {
   try {
-    const parsed = await readClientCollection<unknown>(MEALS_COLLECTION_KEY)
-    return parsed.flatMap(normalizeMeal)
+    return await readMeals()
   } catch (error) {
     console.error('Failed to read meals from IndexedDB', error)
     return []
   }
 }
 
-function normalizeMeal(value: unknown): MealEntry[] {
-  if (!value || typeof value !== 'object') {
-    return []
-  }
-
-  const meal = value as Partial<MealEntry>
-
-  if (typeof meal.id !== 'string' || typeof meal.name !== 'string' || typeof meal.createdAt !== 'string') {
-    return []
-  }
-
-  if (typeof meal.calories !== 'number' || !Number.isFinite(meal.calories) || meal.calories < 0) {
-    return []
-  }
-
-  const protein = typeof meal.protein === 'number' && Number.isFinite(meal.protein) && meal.protein >= 0 ? meal.protein : 0
-  const carbs = typeof meal.carbs === 'number' && Number.isFinite(meal.carbs) && meal.carbs >= 0 ? meal.carbs : 0
-  const fat = typeof meal.fat === 'number' && Number.isFinite(meal.fat) && meal.fat >= 0 ? meal.fat : 0
-  const ingredients = Array.isArray(meal.ingredients)
-    ? meal.ingredients.flatMap(normalizeMealIngredientSnapshot)
-    : []
-
-  return [{
-    id: meal.id,
-    name: meal.name.trim(),
-    calories: Math.round(meal.calories),
-    protein: roundToOne(protein),
-    carbs: roundToOne(carbs),
-    fat: roundToOne(fat),
-    ingredients,
-    createdAt: meal.createdAt
-  }]
-}
-
-function normalizeMealIngredientSnapshot(value: unknown): MealIngredientSnapshot[] {
-  if (!value || typeof value !== 'object') {
-    return []
-  }
-
-  const item = value as Partial<MealIngredientSnapshot>
-
-  if (typeof item.name !== 'string' || typeof item.unit !== 'string') {
-    return []
-  }
-
-  if (typeof item.amount !== 'number' || !Number.isFinite(item.amount) || item.amount <= 0) {
-    return []
-  }
-
-  const name = item.name.trim()
-  const unit = item.unit.trim()
-
-  if (!name || !unit) {
-    return []
-  }
-
-  return [{
-    name,
-    amount: roundToThree(item.amount),
-    unit
-  }]
-}
-
 async function loadIngredientsFromDb(): Promise<IngredientReference[]> {
   try {
-    const parsed = await readClientCollection<unknown>(INGREDIENTS_COLLECTION_KEY)
-    return parsed.flatMap(normalizeIngredient)
+    return await readIngredients()
   } catch (error) {
     console.error('Failed to read ingredients from IndexedDB', error)
     return []
@@ -937,83 +842,6 @@ async function loadSettingsFromDb(): Promise<AppSettings> {
 
 function providerLabel(provider: AiProvider) {
   return provider === 'openai' ? 'OpenAI' : 'Anthropic'
-}
-
-function normalizeIngredient(value: unknown): IngredientReference[] {
-  if (!value || typeof value !== 'object') {
-    return []
-  }
-
-  const ingredient = value as Partial<IngredientReference>
-
-  if (typeof ingredient.id !== 'string' || typeof ingredient.name !== 'string' || typeof ingredient.createdAt !== 'string') {
-    return []
-  }
-
-  if (typeof ingredient.kcal !== 'number' || !Number.isFinite(ingredient.kcal)) {
-    return []
-  }
-
-  if (typeof ingredient.protein !== 'number' || !Number.isFinite(ingredient.protein)) {
-    return []
-  }
-
-  if (typeof ingredient.carbs !== 'number' || !Number.isFinite(ingredient.carbs)) {
-    return []
-  }
-
-  if (typeof ingredient.fat !== 'number' || !Number.isFinite(ingredient.fat)) {
-    return []
-  }
-
-  if (ingredient.kcal < 0 || ingredient.protein < 0 || ingredient.carbs < 0 || ingredient.fat < 0) {
-    return []
-  }
-
-  const unit = typeof ingredient.unit === 'string' && ingredient.unit.trim() ? ingredient.unit.trim() : 'serving'
-  const portionSize = typeof ingredient.portionSize === 'number'
-    && Number.isFinite(ingredient.portionSize)
-    && ingredient.portionSize > 0
-    ? ingredient.portionSize
-    : 1
-  const kcalPerUnit = typeof ingredient.kcalPerUnit === 'number'
-    && Number.isFinite(ingredient.kcalPerUnit)
-    && ingredient.kcalPerUnit >= 0
-    ? ingredient.kcalPerUnit
-    : ingredient.kcal / portionSize
-  const proteinPerUnit = typeof ingredient.proteinPerUnit === 'number'
-    && Number.isFinite(ingredient.proteinPerUnit)
-    && ingredient.proteinPerUnit >= 0
-    ? ingredient.proteinPerUnit
-    : ingredient.protein / portionSize
-  const carbsPerUnit = typeof ingredient.carbsPerUnit === 'number'
-    && Number.isFinite(ingredient.carbsPerUnit)
-    && ingredient.carbsPerUnit >= 0
-    ? ingredient.carbsPerUnit
-    : ingredient.carbs / portionSize
-  const fatPerUnit = typeof ingredient.fatPerUnit === 'number'
-    && Number.isFinite(ingredient.fatPerUnit)
-    && ingredient.fatPerUnit >= 0
-    ? ingredient.fatPerUnit
-    : ingredient.fat / portionSize
-  const uuid = typeof ingredient.uuid === 'string' ? ingredient.uuid.trim() : ''
-
-  return [{
-    id: ingredient.id,
-    uuid,
-    name: ingredient.name.trim(),
-    unit,
-    portionSize,
-    kcal: Math.round(ingredient.kcal),
-    protein: roundToOne(ingredient.protein),
-    carbs: roundToOne(ingredient.carbs),
-    fat: roundToOne(ingredient.fat),
-    kcalPerUnit: roundToSix(kcalPerUnit),
-    proteinPerUnit: roundToSix(proteinPerUnit),
-    carbsPerUnit: roundToSix(carbsPerUnit),
-    fatPerUnit: roundToSix(fatPerUnit),
-    createdAt: ingredient.createdAt
-  }]
 }
 </script>
 

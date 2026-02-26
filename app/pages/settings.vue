@@ -12,7 +12,11 @@ import {
   unlockAiIntegration
 } from '../utils/client-ai-integration'
 import type { AiIntegrationMetadata } from '../utils/client-ai-integration'
-import { clearClientData, readClientCollection, writeClientCollection } from '../utils/client-db'
+import { clearClientData } from '../utils/client-db'
+import { readIngredients, writeIngredients } from '../utils/db/repos/ingredients'
+import type { IngredientRecord } from '../utils/db/repos/ingredients'
+import { readMeals, writeMeals } from '../utils/db/repos/meals'
+import type { MealIngredientSnapshotRecord, MealRecord } from '../utils/db/repos/meals'
 import {
   DEFAULT_AI_PROVIDER,
   DEFAULT_CARBS_GOAL,
@@ -54,39 +58,9 @@ const RECOMMENDATION_OBJECTIVE_OPTIONS = [
   { label: 'Build muscle', value: 'muscle' }
 ]
 
-interface ExampleMealIngredientSnapshot {
-  name: string
-  amount: number
-  unit: string
-}
-
-interface ExampleIngredientRecord {
-  id: string
-  uuid: string
-  name: string
-  unit: string
-  portionSize: number
-  kcal: number
-  protein: number
-  carbs: number
-  fat: number
-  kcalPerUnit: number
-  proteinPerUnit: number
-  carbsPerUnit: number
-  fatPerUnit: number
-  createdAt: string
-}
-
-interface ExampleMealRecord {
-  id: string
-  name: string
-  calories: number
-  protein: number
-  carbs: number
-  fat: number
-  ingredients: ExampleMealIngredientSnapshot[]
-  createdAt: string
-}
+type ExampleMealIngredientSnapshot = MealIngredientSnapshotRecord
+type ExampleIngredientRecord = IngredientRecord
+type ExampleMealRecord = MealRecord
 
 type ExampleIngredientSeed = {
   slug: string
@@ -111,8 +85,6 @@ type ExampleMealSeed = {
   }>
 }
 
-const MEALS_COLLECTION_KEY = 'meals'
-const INGREDIENTS_COLLECTION_KEY = 'ingredients'
 const EXAMPLE_INGREDIENT_ID_PREFIX = 'example-ingredient-'
 const EXAMPLE_MEAL_ID_PREFIX = 'example-meal-'
 
@@ -677,8 +649,8 @@ async function generateExampleData() {
 
   try {
     const [existingIngredients, existingMeals] = await Promise.all([
-      readClientCollection<unknown>(INGREDIENTS_COLLECTION_KEY),
-      readClientCollection<unknown>(MEALS_COLLECTION_KEY)
+      readIngredients(),
+      readMeals()
     ])
 
     const { ingredients: exampleIngredients, meals: exampleMeals } = createExampleData()
@@ -693,8 +665,8 @@ async function generateExampleData() {
     ]
 
     await Promise.all([
-      writeClientCollection(INGREDIENTS_COLLECTION_KEY, mergedIngredients),
-      writeClientCollection(MEALS_COLLECTION_KEY, mergedMeals)
+      writeIngredients(mergedIngredients),
+      writeMeals(mergedMeals)
     ])
 
     sampleDataNotice.value = `Added example data: ${exampleIngredients.length} ingredients and ${exampleMeals.length} meals across the last 7 days.`

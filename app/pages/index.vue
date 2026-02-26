@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { readClientCollection } from '../utils/client-db'
+import { readMeals } from '../utils/db/repos/meals'
+import type { MealRecord } from '../utils/db/repos/meals'
 import { CALORIE_COLORS, MACRO_COLORS } from '../utils/nutrition-colors'
 import {
   DEFAULT_CARBS_GOAL,
@@ -9,17 +10,7 @@ import {
   readAppSettings
 } from '../utils/client-settings'
 
-interface MealEntry {
-  id: string
-  name: string
-  calories: number
-  protein: number
-  carbs: number
-  fat: number
-  createdAt: string
-}
-
-const MEALS_COLLECTION_KEY = 'meals'
+type MealEntry = MealRecord
 
 const meals = ref<MealEntry[]>([])
 const dailyCalorieGoal = ref(DEFAULT_DAILY_CALORIE_GOAL)
@@ -156,42 +147,11 @@ onMounted(async () => {
 
 async function loadMealsFromDb(): Promise<MealEntry[]> {
   try {
-    const parsed = await readClientCollection<unknown>(MEALS_COLLECTION_KEY)
-    return parsed.flatMap(normalizeMeal)
+    return await readMeals()
   } catch (error) {
     console.error('Failed to read meals from IndexedDB', error)
     return []
   }
-}
-
-function normalizeMeal(value: unknown): MealEntry[] {
-  if (!value || typeof value !== 'object') {
-    return []
-  }
-
-  const meal = value as Partial<MealEntry>
-
-  if (typeof meal.id !== 'string' || typeof meal.name !== 'string' || typeof meal.createdAt !== 'string') {
-    return []
-  }
-
-  if (typeof meal.calories !== 'number' || !Number.isFinite(meal.calories) || meal.calories < 0) {
-    return []
-  }
-
-  const protein = typeof meal.protein === 'number' && Number.isFinite(meal.protein) && meal.protein >= 0 ? meal.protein : 0
-  const carbs = typeof meal.carbs === 'number' && Number.isFinite(meal.carbs) && meal.carbs >= 0 ? meal.carbs : 0
-  const fat = typeof meal.fat === 'number' && Number.isFinite(meal.fat) && meal.fat >= 0 ? meal.fat : 0
-
-  return [{
-    id: meal.id,
-    name: meal.name.trim(),
-    calories: Math.round(meal.calories),
-    protein: roundToOne(protein),
-    carbs: roundToOne(carbs),
-    fat: roundToOne(fat),
-    createdAt: meal.createdAt
-  }]
 }
 
 function formatMacro(value: number) {
