@@ -219,6 +219,12 @@ export async function clearPhase0RxdbData(): Promise<void> {
   await runtime.removeRxDatabase(RXDB_NAME, runtime.getRxStorageDexie())
 }
 
+export async function readPhase0LocalDeviceId(): Promise<string> {
+  assertBrowser()
+  const db = await getPhase0Database()
+  return ensureLocalDeviceId(db)
+}
+
 async function getPhase0Database(): Promise<Phase0Database> {
   assertBrowser()
 

@@ -18,6 +18,15 @@ import type { IngredientRecord } from '../utils/db/repos/ingredients'
 import { readMeals, writeMeals } from '../utils/db/repos/meals'
 import type { MealIngredientSnapshotRecord, MealRecord } from '../utils/db/repos/meals'
 import {
+  pauseLocalSync,
+  resetLocalSyncOrchestratorStateAfterLocalDataClear,
+  resumeLocalSync,
+  runLocalSync,
+  setLocalSyncEnabled,
+  useLocalSyncState
+} from '../utils/sync/local-sync'
+import type { LocalSyncStatus } from '../utils/sync/local-sync'
+import {
   DEFAULT_AI_PROVIDER,
   DEFAULT_CARBS_GOAL,
   DEFAULT_DAILY_CALORIE_GOAL,
@@ -227,6 +236,10 @@ const aiChangePasswordNewPin = ref('')
 const isAiUnlockModalOpen = ref(false)
 const aiUnlockError = ref('')
 const aiUnlockPin = ref('')
+const localSync = useLocalSyncState()
+const isSyncActionPending = ref(false)
+const syncStatusActionError = ref('')
+const syncStatusActionNotice = ref('')
 
 const form = reactive({
   dailyCalorieGoal: '',
@@ -263,6 +276,140 @@ onMounted(async () => {
     isLoaded.value = true
   }
 })
+
+const syncStatusLabel = computed(() => {
+  if (!localSync.enabled) {
+    return 'Disabled'
+  }
+
+  switch (localSync.status) {
+    case 'syncing':
+      return 'Syncing'
+    case 'paused':
+      return 'Paused'
+    case 'error':
+      return 'Error'
+    default:
+      return 'Ready'
+  }
+})
+
+const syncStatusColor = computed(() => {
+  if (!localSync.enabled) {
+    return 'neutral'
+  }
+
+  switch (localSync.status) {
+    case 'syncing':
+      return 'primary'
+    case 'error':
+      return 'error'
+    case 'paused':
+      return 'neutral'
+    default:
+      return 'success'
+  }
+})
+
+function formatLocalSyncDateTime(value: string | null) {
+  if (!value) {
+    return 'Never'
+  }
+
+  const timestamp = Date.parse(value)
+
+  if (Number.isNaN(timestamp)) {
+    return 'Invalid timestamp'
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short'
+  }).format(timestamp)
+}
+
+function formatLocalSyncId(value: string | null) {
+  if (!value) {
+    return 'Not set'
+  }
+
+  if (value.length <= 18) {
+    return value
+  }
+
+  return `${value.slice(0, 8)}…${value.slice(-6)}`
+}
+
+function statusBadgeLabel(status: LocalSyncStatus) {
+  switch (status) {
+    case 'syncing':
+      return 'Syncing'
+    case 'paused':
+      return 'Paused'
+    case 'error':
+      return 'Error'
+    default:
+      return 'Idle'
+  }
+}
+
+async function runSyncStatusAction(action: () => Promise<void>, successNotice?: string) {
+  if (isSyncActionPending.value) {
+    return
+  }
+
+  syncStatusActionError.value = ''
+  syncStatusActionNotice.value = ''
+  isSyncActionPending.value = true
+
+  try {
+    await action()
+
+    if (successNotice) {
+      syncStatusActionNotice.value = successNotice
+    }
+  } catch (error) {
+    console.error('Local sync action failed', error)
+    syncStatusActionError.value = error instanceof Error ? error.message : 'Local sync action failed.'
+  } finally {
+    isSyncActionPending.value = false
+  }
+}
+
+async function enableLocalSyncOrchestrator() {
+  await runSyncStatusAction(
+    () => setLocalSyncEnabled(true),
+    'Local sync orchestration enabled for this device.'
+  )
+}
+
+async function disableLocalSyncOrchestrator() {
+  await runSyncStatusAction(
+    () => setLocalSyncEnabled(false),
+    'Local sync orchestration disabled.'
+  )
+}
+
+async function pauseLocalSyncOrchestrator() {
+  await runSyncStatusAction(
+    () => pauseLocalSync(),
+    'Local sync orchestration paused.'
+  )
+}
+
+async function resumeLocalSyncOrchestrator() {
+  await runSyncStatusAction(
+    () => resumeLocalSync(),
+    'Local sync orchestration resumed.'
+  )
+}
+
+async function runManualLocalSyncCheck() {
+  await runSyncStatusAction(
+    () => runLocalSync('manual'),
+    'Recorded a local sync check (Phase 2: no network).'
+  )
+}
 
 async function saveSettings() {
   formError.value = ''
@@ -699,6 +846,7 @@ async function clearAllLocalData() {
 
   try {
     await clearClientData()
+    await resetLocalSyncOrchestratorStateAfterLocalDataClear()
     lockAiIntegration()
     setGoalFormDefaults()
     currentSettings.value = createDefaultAppSettings()
@@ -710,6 +858,8 @@ async function clearAllLocalData() {
     saveNotice.value = ''
     aiIntegrationError.value = ''
     aiIntegrationNotice.value = ''
+    syncStatusActionError.value = ''
+    syncStatusActionNotice.value = ''
     sampleDataError.value = ''
     sampleDataNotice.value = ''
     isRecommendationModalOpen.value = false
@@ -1145,6 +1295,180 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
             </UButton>
           </div>
         </form>
+      </div>
+    </UCard>
+
+    <UCard>
+      <div class="space-y-4">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 class="text-lg font-semibold text-highlighted">
+              Sync (Phase 2)
+            </h2>
+            <p class="text-sm text-muted">
+              Local sync orchestration state only. Cloud sync is not connected yet.
+            </p>
+          </div>
+
+          <div class="flex flex-wrap gap-2">
+            <UBadge
+              :color="syncStatusColor"
+              variant="soft"
+            >
+              {{ syncStatusLabel }}
+            </UBadge>
+            <UBadge
+              :color="localSync.enabled ? 'primary' : 'neutral'"
+              variant="soft"
+            >
+              {{ localSync.enabled ? 'Enabled' : 'Disabled' }}
+            </UBadge>
+            <UBadge
+              :color="localSync.isOnline ? 'success' : 'error'"
+              variant="soft"
+            >
+              {{ localSync.isOnline ? 'Online' : 'Offline' }}
+            </UBadge>
+          </div>
+        </div>
+
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div class="space-y-1">
+            <p class="text-xs font-medium uppercase tracking-wide text-muted">
+              Device ID
+            </p>
+            <code
+              class="block break-all rounded-md border border-default bg-muted/20 px-2 py-1 text-sm text-highlighted"
+              :title="localSync.deviceId ?? undefined"
+            >
+              {{ formatLocalSyncId(localSync.deviceId) }}
+            </code>
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-xs font-medium uppercase tracking-wide text-muted">
+              Vault ID
+            </p>
+            <code
+              class="block break-all rounded-md border border-default bg-muted/20 px-2 py-1 text-sm text-highlighted"
+              :title="localSync.vaultId ?? undefined"
+            >
+              {{ formatLocalSyncId(localSync.vaultId) }}
+            </code>
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-xs font-medium uppercase tracking-wide text-muted">
+              Last attempt
+            </p>
+            <p class="text-sm text-highlighted">
+              {{ formatLocalSyncDateTime(localSync.lastSyncAttemptAt) }}
+            </p>
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-xs font-medium uppercase tracking-wide text-muted">
+              Last success
+            </p>
+            <p class="text-sm text-highlighted">
+              {{ formatLocalSyncDateTime(localSync.lastSyncSuccessAt) }}
+            </p>
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-xs font-medium uppercase tracking-wide text-muted">
+              Trigger
+            </p>
+            <p class="text-sm text-highlighted">
+              {{ localSync.lastTriggerReason ?? 'None yet' }}
+            </p>
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-xs font-medium uppercase tracking-wide text-muted">
+              Engine state
+            </p>
+            <p class="text-sm text-highlighted">
+              {{ statusBadgeLabel(localSync.status) }}
+            </p>
+          </div>
+        </div>
+
+        <p class="text-xs text-muted">
+          Phase 2 stores local sync lifecycle metadata and trigger state only. A future phase will add optional encrypted cloud sync.
+        </p>
+
+        <p
+          v-if="syncStatusActionError || localSync.lastError"
+          class="text-sm text-error"
+        >
+          {{ syncStatusActionError || localSync.lastError }}
+        </p>
+
+        <p
+          v-else-if="syncStatusActionNotice"
+          class="text-sm text-success"
+        >
+          {{ syncStatusActionNotice }}
+        </p>
+
+        <div class="flex flex-wrap justify-end gap-2">
+          <UButton
+            v-if="!localSync.enabled"
+            type="button"
+            icon="i-lucide-toggle-right"
+            :loading="isSyncActionPending"
+            @click="enableLocalSyncOrchestrator"
+          >
+            Enable local sync
+          </UButton>
+
+          <UButton
+            v-else-if="localSync.isPaused"
+            type="button"
+            icon="i-lucide-play"
+            :loading="isSyncActionPending"
+            @click="resumeLocalSyncOrchestrator"
+          >
+            Resume
+          </UButton>
+
+          <UButton
+            v-else
+            type="button"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-pause"
+            :loading="isSyncActionPending"
+            @click="pauseLocalSyncOrchestrator"
+          >
+            Pause
+          </UButton>
+
+          <UButton
+            type="button"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-refresh-cw"
+            :loading="isSyncActionPending"
+            :disabled="!localSync.enabled || localSync.isPaused || isSyncActionPending"
+            @click="runManualLocalSyncCheck"
+          >
+            Run local sync check
+          </UButton>
+
+          <UButton
+            v-if="localSync.enabled"
+            type="button"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-toggle-left"
+            :loading="isSyncActionPending"
+            @click="disableLocalSyncOrchestrator"
+          >
+            Disable
+          </UButton>
+        </div>
       </div>
     </UCard>
 

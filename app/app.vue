@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ensureLocalSyncOrchestratorStarted } from './utils/sync/local-sync'
+
 useHead({
   meta: [
     { name: 'viewport', content: 'width=device-width, initial-scale=1, maximum-scale=1' },
@@ -46,6 +48,12 @@ function isRouteActive(to: string) {
 
   return route.path.startsWith(to)
 }
+
+onMounted(() => {
+  void ensureLocalSyncOrchestratorStarted().catch((error) => {
+    console.error('Failed to start local sync orchestrator', error)
+  })
+})
 </script>
 
 <template>
