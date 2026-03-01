@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { testAiProviderKey } from '../utils/ai-meal-import'
 import {
-  changeAiIntegrationPassword,
   clearAiIntegration,
   isAiIntegrationUnlocked as getIsAiIntegrationUnlocked,
   isValidAiPin,
@@ -13,19 +12,37 @@ import {
 } from '../utils/client-ai-integration'
 import type { AiIntegrationMetadata } from '../utils/client-ai-integration'
 import { clearClientData } from '../utils/client-db'
-import { readIngredients, writeIngredients } from '../utils/db/repos/ingredients'
-import type { IngredientRecord } from '../utils/db/repos/ingredients'
-import { readMeals, writeMeals } from '../utils/db/repos/meals'
-import type { MealIngredientSnapshotRecord, MealRecord } from '../utils/db/repos/meals'
 import {
-  pauseLocalSync,
+  createEncryptedSyncVault,
+  deleteRemoteSyncVault,
+  listLocalSyncDevices,
+  readLocalSyncVaultCredentials,
+  readLocalSyncVaultPassphrase
+} from '../utils/sync/credentials'
+import type { LocalSyncVaultCredentials } from '../utils/sync/credentials'
+import { readLocalSyncConflictEntries } from '../utils/sync/conflicts'
+import type { LocalSyncConflictEntry } from '../utils/sync/conflicts'
+import { fetchSyncVaultKeyRecord, unwrapSyncVaultKeyRecord } from '../utils/sync/e2ee'
+import {
+  connectLocalSyncToExistingVault,
+  ensureLocalSyncOrchestratorStarted,
   resetLocalSyncOrchestratorStateAfterLocalDataClear,
   resumeLocalSync,
   runLocalSync,
   setLocalSyncEnabled,
+  signOutLocalSyncKeepingLocalData,
   useLocalSyncState
 } from '../utils/sync/local-sync'
 import type { LocalSyncStatus } from '../utils/sync/local-sync'
+import {
+  authorizeLocalSyncPairingRequest,
+  buildLocalSyncPairingAuthorizeUrl,
+  createLocalSyncPairingRequest,
+  getLocalSyncPairingAuthorizeQueryKey,
+  getLocalSyncPairingStatus,
+  normalizeLocalSyncPairingCode
+} from '../utils/sync/pairing'
+import type { LocalSyncPairingPayload } from '../utils/sync/pairing'
 import {
   DEFAULT_AI_PROVIDER,
   DEFAULT_CARBS_GOAL,
@@ -36,8 +53,18 @@ import {
   writeAppSettings
 } from '../utils/client-settings'
 import type { AiProvider, AppSettings } from '../utils/client-settings'
+import type { SyncDeviceRecord, SyncPairingCredentialsPayload } from '#shared/utils/sync/protocol'
 
 type GoalSettings = Pick<AppSettings, 'dailyCalorieGoal' | 'proteinGoal' | 'carbsGoal' | 'fatGoal'>
+type SyncRecoveryExportPayload = {
+  version: 1
+  exportedAt: string
+  vaultId: string
+  vaultToken: string
+  transportMode: LocalSyncVaultCredentials['transportMode']
+  createdAt: string
+  passphrase: string
+}
 
 type RecommendationSex = 'female' | 'male'
 type RecommendationObjective = 'loss' | 'maintenance' | 'gain' | 'muscle'
@@ -67,144 +94,21 @@ const RECOMMENDATION_OBJECTIVE_OPTIONS = [
   { label: 'Build muscle', value: 'muscle' }
 ]
 
-type ExampleMealIngredientSnapshot = MealIngredientSnapshotRecord
-type ExampleIngredientRecord = IngredientRecord
-type ExampleMealRecord = MealRecord
+const goalsActionMenuItems = [[{
+  label: 'Recommend goals',
+  icon: 'i-lucide-wand-sparkles',
+  onSelect: () => openRecommendationModal()
+}]]
 
-type ExampleIngredientSeed = {
-  slug: string
-  uuid: string
-  name: string
-  unit: string
-  portionSize: number
-  kcal: number
-  protein: number
-  carbs: number
-  fat: number
-}
-
-type ExampleMealSeed = {
-  slug: string
-  name: string
-  hour: number
-  minute: number
-  items: Array<{
-    ingredientUuid: string
-    amount: number
-  }>
-}
-
-const EXAMPLE_INGREDIENT_ID_PREFIX = 'example-ingredient-'
-const EXAMPLE_MEAL_ID_PREFIX = 'example-meal-'
-
-const EXAMPLE_INGREDIENT_SEEDS: ExampleIngredientSeed[] = [
-  { slug: 'bread', uuid: '9be69650-2300-48c0-b2dc-26cc2258a372', name: 'Bread', unit: 'slice', portionSize: 1, kcal: 80, protein: 3, carbs: 14, fat: 1 },
-  { slug: 'eggs', uuid: 'b478eccf-58de-4c75-9d0f-4cdac2839cae', name: 'Eggs', unit: 'egg', portionSize: 1, kcal: 72, protein: 6.3, carbs: 0.4, fat: 4.8 },
-  { slug: 'mayonnaise', uuid: 'c67dade5-c61a-4097-b940-16ff446ccc89', name: 'Mayonnaise', unit: 'tbsp', portionSize: 1, kcal: 94, protein: 0.1, carbs: 0.1, fat: 10.3 },
-  { slug: 'cheese-slices', uuid: 'a1de2e25-7b09-4f5f-bfd6-362b7d846e81', name: 'Cheese slices', unit: 'slice', portionSize: 1, kcal: 60, protein: 4, carbs: 1, fat: 5 },
-  { slug: 'ham-slices', uuid: 'f18f2f2e-e777-4629-b3d0-3f7a3ea61455', name: 'Ham slices', unit: 'slice', portionSize: 1, kcal: 30, protein: 5, carbs: 1, fat: 1.5 },
-  { slug: 'greek-yogurt', uuid: '34abf9fa-137b-41cc-bd8d-0817dd6f8440', name: 'Greek yogurt', unit: 'g', portionSize: 100, kcal: 59, protein: 10, carbs: 3.6, fat: 0.4 },
-  { slug: 'oats', uuid: '9f450852-f642-4a03-b84a-3e7a95f88857', name: 'Oats', unit: 'g', portionSize: 100, kcal: 389, protein: 16.9, carbs: 66.3, fat: 6.9 },
-  { slug: 'banana', uuid: 'f9fe96a4-fb89-4476-a41d-e598f613e2a0', name: 'Banana', unit: 'g', portionSize: 100, kcal: 89, protein: 1.1, carbs: 22.8, fat: 0.3 }
-]
-
-const EXAMPLE_MEAL_SEEDS: ExampleMealSeed[] = [
-  {
-    slug: 'egg-sandwich',
-    name: 'Egg sandwich',
-    hour: 8,
-    minute: 15,
-    items: [
-      { ingredientUuid: '9be69650-2300-48c0-b2dc-26cc2258a372', amount: 2 },
-      { ingredientUuid: 'b478eccf-58de-4c75-9d0f-4cdac2839cae', amount: 2 },
-      { ingredientUuid: 'a1de2e25-7b09-4f5f-bfd6-362b7d846e81', amount: 1 },
-      { ingredientUuid: 'c67dade5-c61a-4097-b940-16ff446ccc89', amount: 0.5 }
-    ]
-  },
-  {
-    slug: 'ham-cheese-sandwich',
-    name: 'Ham & cheese sandwich',
-    hour: 13,
-    minute: 10,
-    items: [
-      { ingredientUuid: '9be69650-2300-48c0-b2dc-26cc2258a372', amount: 2 },
-      { ingredientUuid: 'f18f2f2e-e777-4629-b3d0-3f7a3ea61455', amount: 3 },
-      { ingredientUuid: 'a1de2e25-7b09-4f5f-bfd6-362b7d846e81', amount: 1 },
-      { ingredientUuid: 'c67dade5-c61a-4097-b940-16ff446ccc89', amount: 1 }
-    ]
-  },
-  {
-    slug: 'yogurt-oats-bowl',
-    name: 'Yogurt oats bowl',
-    hour: 19,
-    minute: 5,
-    items: [
-      { ingredientUuid: '34abf9fa-137b-41cc-bd8d-0817dd6f8440', amount: 220 },
-      { ingredientUuid: '9f450852-f642-4a03-b84a-3e7a95f88857', amount: 55 },
-      { ingredientUuid: 'f9fe96a4-fb89-4476-a41d-e598f613e2a0', amount: 120 }
-    ]
-  },
-  {
-    slug: 'omelette-toast',
-    name: 'Omelette toast',
-    hour: 8,
-    minute: 40,
-    items: [
-      { ingredientUuid: 'b478eccf-58de-4c75-9d0f-4cdac2839cae', amount: 3 },
-      { ingredientUuid: '9be69650-2300-48c0-b2dc-26cc2258a372', amount: 2 },
-      { ingredientUuid: 'a1de2e25-7b09-4f5f-bfd6-362b7d846e81', amount: 1 }
-    ]
-  },
-  {
-    slug: 'banana-yogurt-cup',
-    name: 'Banana yogurt cup',
-    hour: 16,
-    minute: 20,
-    items: [
-      { ingredientUuid: '34abf9fa-137b-41cc-bd8d-0817dd6f8440', amount: 180 },
-      { ingredientUuid: 'f9fe96a4-fb89-4476-a41d-e598f613e2a0', amount: 140 }
-    ]
-  },
-  {
-    slug: 'grilled-cheese-sandwich',
-    name: 'Grilled cheese sandwich',
-    hour: 20,
-    minute: 10,
-    items: [
-      { ingredientUuid: '9be69650-2300-48c0-b2dc-26cc2258a372', amount: 2 },
-      { ingredientUuid: 'a1de2e25-7b09-4f5f-bfd6-362b7d846e81', amount: 2 },
-      { ingredientUuid: 'c67dade5-c61a-4097-b940-16ff446ccc89', amount: 0.3 }
-    ]
-  },
-  {
-    slug: 'ham-toast-snack',
-    name: 'Ham toast snack',
-    hour: 11,
-    minute: 30,
-    items: [
-      { ingredientUuid: '9be69650-2300-48c0-b2dc-26cc2258a372', amount: 1 },
-      { ingredientUuid: 'f18f2f2e-e777-4629-b3d0-3f7a3ea61455', amount: 2 },
-      { ingredientUuid: 'c67dade5-c61a-4097-b940-16ff446ccc89', amount: 0.4 }
-    ]
-  }
-]
-
-const EXAMPLE_DAY_MEAL_PLAN_INDEXES: number[][] = [
-  [0, 1, 2],
-  [3, 4, 1],
-  [5, 2, 6],
-  [0, 4, 5],
-  [3, 1, 6],
-  [2, 6, 0],
-  [5, 4, 3]
-]
+const route = useRoute()
+const router = useRouter()
+const syncPairingAuthorizeQueryKey = getLocalSyncPairingAuthorizeQueryKey()
 
 const isLoaded = ref(false)
 const isSaving = ref(false)
 const isSavingAiIntegration = ref(false)
 const isTestingAiIntegrationKey = ref(false)
 const isClearingData = ref(false)
-const isGeneratingExampleData = ref(false)
 const isRecommendationModalOpen = ref(false)
 const currentSettings = ref<AppSettings>(createDefaultAppSettings())
 const aiIntegration = ref<AiIntegrationMetadata | null>(null)
@@ -216,23 +120,14 @@ const aiIntegrationNotice = ref('')
 const recommendationError = ref('')
 const dangerError = ref('')
 const dangerNotice = ref('')
-const sampleDataError = ref('')
-const sampleDataNotice = ref('')
 const isAiSetupModalOpen = ref(false)
-const aiSetupStep = ref<'pin' | 'provider'>('pin')
 const aiSetupError = ref('')
-const aiSetupPin = ref('')
 const aiSetupProvider = ref<AiProvider>(DEFAULT_AI_PROVIDER)
 const aiSetupApiKey = ref('')
 const isAiChangeProviderModalOpen = ref(false)
 const aiChangeProviderError = ref('')
-const aiChangeProviderCurrentPin = ref('')
 const aiChangeProviderProvider = ref<AiProvider>(DEFAULT_AI_PROVIDER)
 const aiChangeProviderApiKey = ref('')
-const isAiChangePasswordModalOpen = ref(false)
-const aiChangePasswordError = ref('')
-const aiChangePasswordCurrentPin = ref('')
-const aiChangePasswordNewPin = ref('')
 const isAiUnlockModalOpen = ref(false)
 const aiUnlockError = ref('')
 const aiUnlockPin = ref('')
@@ -240,6 +135,47 @@ const localSync = useLocalSyncState()
 const isSyncActionPending = ref(false)
 const syncStatusActionError = ref('')
 const syncStatusActionNotice = ref('')
+const syncVaultCredentials = ref<LocalSyncVaultCredentials | null>(null)
+const isSyncBootstrapModalOpen = ref(false)
+const isSyncBootstrapPending = ref(false)
+const syncBootstrapError = ref('')
+const syncBootstrapDeviceName = ref('')
+const syncBootstrapPassphrase = ref('')
+const syncBootstrapPassphraseConfirm = ref('')
+const isSyncDevicesLoading = ref(false)
+const syncDevices = ref<SyncDeviceRecord[]>([])
+const syncDevicesError = ref('')
+const syncConflictEntries = ref<LocalSyncConflictEntry[]>([])
+const isSyncConflictsLoading = ref(false)
+const syncConflictsError = ref('')
+const isSyncDetailsModalOpen = ref(false)
+const isSyncRecoveryModalOpen = ref(false)
+const syncRecoveryPayload = ref('')
+const syncRecoveryError = ref('')
+const syncRecoveryNotice = ref('')
+const isSyncDeleteCloudModalOpen = ref(false)
+const isSyncDeleteCloudPending = ref(false)
+const syncDeleteCloudConfirmValue = ref('')
+const syncDeleteCloudError = ref('')
+const isSyncConnectModalOpen = ref(false)
+const isCreatingSyncPairingRequest = ref(false)
+const isGeneratingSyncConnectQr = ref(false)
+const isSyncConnectQrExpanded = ref(false)
+const syncConnectQrDataUrl = ref('')
+const syncConnectQrUrl = ref('')
+const syncConnectError = ref('')
+const syncConnectPassphrase = ref('')
+const syncPairingRequest = ref<LocalSyncPairingPayload | null>(null)
+const syncPairingStatus = ref<'pending' | 'approved' | 'expired' | null>(null)
+const syncPairingApprovedCredentials = ref<LocalSyncVaultCredentials | null>(null)
+const isCompletingSyncPairingConnect = ref(false)
+const isSyncAuthorizeModalOpen = ref(false)
+const syncAuthorizeCode = ref('')
+const isAuthorizingSyncPairing = ref(false)
+const isHandlingSyncAuthorizeQuery = ref(false)
+const syncAuthorizeError = ref('')
+
+let syncPairingStatusPollTimer: ReturnType<typeof setTimeout> | null = null
 
 const form = reactive({
   dailyCalorieGoal: '',
@@ -257,46 +193,155 @@ const recommendationForm = reactive({
   objective: 'maintenance' as RecommendationObjective
 })
 
+const hasUnsavedGoalChanges = computed(() => {
+  return (
+    normalizeGoalSettingInput(form.dailyCalorieGoal) !== currentSettings.value.dailyCalorieGoal
+    || normalizeGoalSettingInput(form.proteinGoal) !== currentSettings.value.proteinGoal
+    || normalizeGoalSettingInput(form.carbsGoal) !== currentSettings.value.carbsGoal
+    || normalizeGoalSettingInput(form.fatGoal) !== currentSettings.value.fatGoal
+  )
+})
+
 onMounted(async () => {
   try {
-    const [settings, metadata] = await Promise.all([
+    const [settings, metadata, syncCredentials] = await Promise.all([
       readAppSettings(),
-      readAiIntegrationMetadata()
+      readAiIntegrationMetadata(),
+      readLocalSyncVaultCredentials()
     ])
     currentSettings.value = settings
     aiIntegration.value = metadata
+    syncVaultCredentials.value = syncCredentials
     isAiUnlocked.value = getIsAiIntegrationUnlocked()
     setGoalFormValues(settings)
+    await refreshSyncDiagnostics(syncCredentials)
   } catch (error) {
     console.error('Failed to load settings from IndexedDB', error)
     formError.value = 'Could not load settings. Using default goals for now.'
     setGoalFormDefaults()
     currentSettings.value = createDefaultAppSettings()
+    syncVaultCredentials.value = null
+    await refreshSyncDiagnostics(null)
   } finally {
     isLoaded.value = true
   }
 })
 
+watch(
+  () => [localSync.vaultId, localSync.enabled, localSync.transportMode] as const,
+  () => {
+    void refreshSyncVaultCredentials()
+  }
+)
+
+watch(
+  () => [localSync.lastSyncSuccessAt, localSync.lastError] as const,
+  () => {
+    void refreshSyncDiagnostics()
+    void refreshAiIntegrationState()
+  }
+)
+
+watch(
+  () => typeof route.query[syncPairingAuthorizeQueryKey] === 'string' ? route.query[syncPairingAuthorizeQueryKey] : null,
+  (value) => {
+    if (!value) {
+      return
+    }
+
+    void prepareSyncAuthorizeModalFromQuery(value)
+  },
+  {
+    immediate: true
+  }
+)
+
+watch(isSyncConnectModalOpen, (isOpen) => {
+  if (isOpen) {
+    return
+  }
+
+  clearSyncPairingStatusPolling()
+  syncConnectError.value = ''
+  syncConnectQrDataUrl.value = ''
+  syncConnectQrUrl.value = ''
+  syncConnectPassphrase.value = ''
+  isSyncConnectQrExpanded.value = false
+  syncPairingRequest.value = null
+  syncPairingStatus.value = null
+  syncPairingApprovedCredentials.value = null
+})
+
+watch(isSyncBootstrapModalOpen, (isOpen) => {
+  if (isOpen) {
+    return
+  }
+
+  syncBootstrapError.value = ''
+  syncBootstrapDeviceName.value = ''
+  syncBootstrapPassphrase.value = ''
+  syncBootstrapPassphraseConfirm.value = ''
+})
+
+watch(isSyncRecoveryModalOpen, (isOpen) => {
+  if (isOpen) {
+    return
+  }
+
+  syncRecoveryError.value = ''
+  syncRecoveryNotice.value = ''
+})
+
+watch(isSyncDeleteCloudModalOpen, (isOpen) => {
+  if (isOpen) {
+    return
+  }
+
+  syncDeleteCloudConfirmValue.value = ''
+  syncDeleteCloudError.value = ''
+})
+
+watch(isSyncAuthorizeModalOpen, (isOpen) => {
+  if (isOpen) {
+    return
+  }
+
+  syncAuthorizeCode.value = ''
+  syncAuthorizeError.value = ''
+})
+
+onBeforeUnmount(() => {
+  clearSyncPairingStatusPolling()
+})
+
 const syncStatusLabel = computed(() => {
   if (!localSync.enabled) {
-    return 'Disabled'
+    return 'Off'
+  }
+
+  if (localSync.status === 'error' && localSync.nextRetryAt) {
+    return 'Retrying soon'
   }
 
   switch (localSync.status) {
     case 'syncing':
-      return 'Syncing'
+      return 'Checking now'
     case 'paused':
       return 'Paused'
     case 'error':
-      return 'Error'
+      return 'Needs attention'
     default:
-      return 'Ready'
+      return 'Up to date'
   }
 })
 
 const syncStatusColor = computed(() => {
   if (!localSync.enabled) {
     return 'neutral'
+  }
+
+  if (localSync.status === 'error' && localSync.nextRetryAt) {
+    return 'warning'
   }
 
   switch (localSync.status) {
@@ -309,6 +354,270 @@ const syncStatusColor = computed(() => {
     default:
       return 'success'
   }
+})
+
+const syncTransportModeLabel = computed(() => {
+  switch (syncVaultCredentials.value?.transportMode ?? localSync.transportMode) {
+    case 'plaintext-dev':
+      return 'Legacy unencrypted'
+    case 'e2ee-v1':
+      return 'Encrypted (E2EE)'
+    default:
+      return 'Not configured'
+  }
+})
+
+const hasStoredSyncVault = computed(() => Boolean(syncVaultCredentials.value))
+const showSyncActionMenu = computed(() => hasStoredSyncVault.value)
+const hasLegacyEncryptedAiIntegration = computed(() => aiIntegration.value?.storageMode === 'legacy-encrypted')
+const aiIntegrationStatusLabel = computed(() => hasLegacyEncryptedAiIntegration.value ? 'Legacy format' : 'Ready')
+const aiIntegrationStatusColor = computed(() => hasLegacyEncryptedAiIntegration.value ? 'warning' : 'success')
+
+const canExportSyncRecoveryKey = computed(() => {
+  return syncVaultCredentials.value?.transportMode === 'e2ee-v1'
+})
+
+const canManageRemoteSyncVault = computed(() => hasStoredSyncVault.value)
+
+const canAuthorizeNewDevice = computed(() => {
+  return localSync.enabled
+    && syncVaultCredentials.value?.transportMode === 'e2ee-v1'
+})
+
+const syncPanelDescription = computed(() => {
+  if (!hasStoredSyncVault.value) {
+    return 'Set up end-to-end encrypted sync to keep meals, ingredients, settings, and AI integration available across linked devices. Data is encrypted on-device before upload, the server stores only ciphertext, and new devices are approved from one you already trust.'
+  }
+
+  return 'Keep meals, ingredients, and settings synced across your devices. The cloud copy stays encrypted.'
+})
+
+const syncOverviewTitle = computed(() => {
+  if (!hasStoredSyncVault.value) {
+    return 'Encrypted sync is not set up on this device yet.'
+  }
+
+  if (!localSync.enabled) {
+    return 'This device is linked, but sync is currently turned off.'
+  }
+
+  if (localSync.isPaused) {
+    return 'Sync is paused on this device.'
+  }
+
+  if (localSync.status === 'error' && localSync.nextRetryAt) {
+    return 'Sync hit a temporary issue and will retry automatically.'
+  }
+
+  if (localSync.status === 'error') {
+    return 'Sync needs attention on this device.'
+  }
+
+  if (localSync.status === 'syncing') {
+    return 'Your data is syncing now.'
+  }
+
+  return 'Your data is syncing normally on this device.'
+})
+
+const syncOverviewDescription = computed(() => {
+  if (!hasStoredSyncVault.value) {
+    return 'Set up encrypted sync here, or connect this browser to an existing encrypted device. The cloud copy stays encrypted.'
+  }
+
+  if (!localSync.enabled) {
+    return 'This browser still remembers your encrypted vault. Turn sync back on whenever you want it to start syncing again.'
+  }
+
+  if (localSync.isPaused) {
+    return 'Local changes stay on this device until you resume. Nothing new is sent to the cloud while sync is paused.'
+  }
+
+  if (localSync.status === 'error' && localSync.nextRetryAt) {
+    return `A retry is already scheduled for ${formatLocalSyncDateTime(localSync.nextRetryAt)}. Open details if you need the technical reason.`
+  }
+
+  if (localSync.status === 'error') {
+    return 'Something blocked the last sync attempt. Open details if you need the technical reason.'
+  }
+
+  if (localSync.status === 'syncing') {
+    return 'This browser is checking for changes in the background right now.'
+  }
+
+  return 'Meals, ingredients, and settings sync in the background whenever this device is online.'
+})
+
+const syncLastSuccessSummary = computed(() => {
+  if (!hasStoredSyncVault.value) {
+    return 'Not set up yet'
+  }
+
+  if (!localSync.lastSyncSuccessAt) {
+    return 'No completed sync yet'
+  }
+
+  return formatLocalSyncDateTime(localSync.lastSyncSuccessAt)
+})
+
+const syncDeviceSummary = computed(() => {
+  if (!canManageRemoteSyncVault.value) {
+    return 'Not connected'
+  }
+
+  if (isSyncDevicesLoading.value) {
+    return 'Loading devices...'
+  }
+
+  if (syncDevicesError.value) {
+    return 'Unavailable'
+  }
+
+  if (!syncDevices.value.length) {
+    return 'No linked devices reported yet'
+  }
+
+  return syncDevices.value.length === 1 ? '1 linked device' : `${syncDevices.value.length} linked devices`
+})
+
+const syncConflictSummary = computed(() => {
+  if (isSyncConflictsLoading.value) {
+    return 'Loading issues...'
+  }
+
+  if (syncConflictsError.value) {
+    return 'Unavailable'
+  }
+
+  if (!syncConflictEntries.value.length) {
+    return 'No recent issues'
+  }
+
+  return syncConflictEntries.value.length === 1 ? '1 recent issue logged' : `${syncConflictEntries.value.length} recent issues logged`
+})
+
+const syncActionMenuItems = computed(() => {
+  const actionItems: Array<Array<Record<string, unknown>>> = []
+  const primaryItems: Array<Record<string, unknown>> = []
+  const vaultItems: Array<Record<string, unknown>> = [
+    {
+      label: 'Technical details',
+      icon: 'i-lucide-info',
+      onSelect: () => openSyncDetailsModal()
+    }
+  ]
+
+  if (!localSync.enabled) {
+    if (hasStoredSyncVault.value) {
+      primaryItems.push({
+        label: 'Enable sync',
+        icon: 'i-lucide-toggle-right',
+        disabled: isSyncActionPending.value,
+        onSelect: () => {
+          void enableLocalSyncOrchestrator()
+        }
+      })
+    } else {
+      primaryItems.push(
+        {
+          label: 'Set up encrypted sync',
+          icon: 'i-lucide-lock-keyhole',
+          disabled: isSyncBootstrapPending.value || isCreatingSyncPairingRequest.value,
+          onSelect: () => openSyncBootstrapModal()
+        },
+        {
+          label: 'Connect to existing device',
+          icon: 'i-lucide-link',
+          disabled: isSyncBootstrapPending.value || isCreatingSyncPairingRequest.value,
+          onSelect: () => openSyncConnectModal()
+        }
+      )
+    }
+  } else {
+    if (localSync.isPaused) {
+      primaryItems.push({
+        label: 'Resume sync',
+        icon: 'i-lucide-play',
+        disabled: isSyncActionPending.value,
+        onSelect: () => {
+          void resumeLocalSyncOrchestrator()
+        }
+      })
+    } else {
+      primaryItems.push({
+        label: 'Sync now',
+        icon: 'i-lucide-refresh-cw',
+        disabled: isSyncActionPending.value,
+        onSelect: () => {
+          void runManualLocalSyncCheck()
+        }
+      })
+    }
+
+    if (canAuthorizeNewDevice.value) {
+      primaryItems.push({
+        label: 'Authorize new device',
+        icon: 'i-lucide-shield-check',
+        onSelect: () => openSyncAuthorizeModal()
+      })
+    }
+  }
+
+  if (canExportSyncRecoveryKey.value) {
+    vaultItems.push({
+      label: 'Export recovery key',
+      icon: 'i-lucide-key-round',
+      onSelect: () => openSyncRecoveryModal()
+    })
+  }
+
+  if (canManageRemoteSyncVault.value) {
+    vaultItems.push(
+      {
+        label: 'Sign out',
+        icon: 'i-lucide-log-out',
+        onSelect: () => {
+          void signOutLocalSync()
+        }
+      },
+      {
+        label: 'Delete cloud copy',
+        icon: 'i-lucide-cloud-off',
+        color: 'error',
+        onSelect: () => openSyncDeleteCloudModal()
+      }
+    )
+  }
+
+  if (primaryItems.length) {
+    actionItems.push(primaryItems)
+  }
+
+  if (vaultItems.length) {
+    actionItems.push(vaultItems)
+  }
+
+  return actionItems
+})
+
+const syncDeleteCloudConfirmationMatches = computed(() => {
+  return syncDeleteCloudConfirmValue.value.trim() === (syncVaultCredentials.value?.vaultId ?? '')
+})
+
+const syncConnectQrHostWarning = computed(() => {
+  return getSyncHostWarning(syncConnectQrUrl.value)
+})
+
+const isSyncConnectAwaitingPassphrase = computed(() => {
+  return syncPairingStatus.value === 'approved' && Boolean(syncPairingApprovedCredentials.value)
+})
+
+const syncConnectModalDescription = computed(() => {
+  if (isSyncConnectAwaitingPassphrase.value) {
+    return 'Authorization is complete. Enter the same sync passphrase used when this vault was created to finish linking this device.'
+  }
+
+  return 'Use this code on a device that is already synced. After approval there, enter the same sync passphrase here to finish linking.'
 })
 
 function formatLocalSyncDateTime(value: string | null) {
@@ -328,19 +637,29 @@ function formatLocalSyncDateTime(value: string | null) {
   }).format(timestamp)
 }
 
-function formatLocalSyncId(value: string | null) {
+function getSyncHostWarning(value: string) {
   if (!value) {
-    return 'Not set'
+    return ''
   }
 
-  if (value.length <= 18) {
-    return value
+  try {
+    const hostname = new URL(value).hostname
+
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+      return 'This QR uses a localhost URL. Open the app on your computer with a LAN URL before scanning it from another device.'
+    }
+  } catch {
+    return ''
   }
 
-  return `${value.slice(0, 8)}…${value.slice(-6)}`
+  return ''
 }
 
 function statusBadgeLabel(status: LocalSyncStatus) {
+  if (status === 'error' && localSync.nextRetryAt) {
+    return 'Retry scheduled'
+  }
+
   switch (status) {
     case 'syncing':
       return 'Syncing'
@@ -350,6 +669,27 @@ function statusBadgeLabel(status: LocalSyncStatus) {
       return 'Error'
     default:
       return 'Idle'
+  }
+}
+
+function formatLocalSyncErrorCode(value: string | null) {
+  switch (value) {
+    case 'network':
+      return 'Network'
+    case 'auth':
+      return 'Authentication'
+    case 'server':
+      return 'Server'
+    case 'config':
+      return 'Configuration'
+    case 'crypto':
+      return 'Encryption'
+    case 'validation':
+      return 'Validation'
+    case 'unknown':
+      return 'Unknown'
+    default:
+      return 'None'
   }
 }
 
@@ -372,6 +712,7 @@ async function runSyncStatusAction(action: () => Promise<void>, successNotice?: 
     console.error('Local sync action failed', error)
     syncStatusActionError.value = error instanceof Error ? error.message : 'Local sync action failed.'
   } finally {
+    await refreshSyncVaultCredentials()
     isSyncActionPending.value = false
   }
 }
@@ -379,36 +720,688 @@ async function runSyncStatusAction(action: () => Promise<void>, successNotice?: 
 async function enableLocalSyncOrchestrator() {
   await runSyncStatusAction(
     () => setLocalSyncEnabled(true),
-    'Local sync orchestration enabled for this device.'
+    'Encrypted sync enabled for this device.'
   )
 }
 
-async function disableLocalSyncOrchestrator() {
-  await runSyncStatusAction(
-    () => setLocalSyncEnabled(false),
-    'Local sync orchestration disabled.'
-  )
+function openSyncBootstrapModal() {
+  syncStatusActionError.value = ''
+  syncStatusActionNotice.value = ''
+  syncBootstrapError.value = ''
+  syncBootstrapDeviceName.value = getLocalBrowserDeviceName()
+  syncBootstrapPassphrase.value = ''
+  syncBootstrapPassphraseConfirm.value = ''
+  isSyncBootstrapModalOpen.value = true
 }
 
-async function pauseLocalSyncOrchestrator() {
-  await runSyncStatusAction(
-    () => pauseLocalSync(),
-    'Local sync orchestration paused.'
-  )
+function closeSyncBootstrapModal() {
+  if (isSyncBootstrapPending.value) {
+    return
+  }
+
+  isSyncBootstrapModalOpen.value = false
 }
 
 async function resumeLocalSyncOrchestrator() {
   await runSyncStatusAction(
     () => resumeLocalSync(),
-    'Local sync orchestration resumed.'
+    'Sync resumed on this device.'
   )
 }
 
 async function runManualLocalSyncCheck() {
   await runSyncStatusAction(
     () => runLocalSync('manual'),
-    'Recorded a local sync check (Phase 2: no network).'
+    'Sync check completed.'
   )
+}
+
+async function refreshSyncVaultCredentials() {
+  try {
+    syncVaultCredentials.value = await readLocalSyncVaultCredentials()
+    await refreshSyncDiagnostics(syncVaultCredentials.value)
+  } catch (error) {
+    console.error('Failed to refresh local sync vault credentials', error)
+    syncVaultCredentials.value = null
+    await refreshSyncDiagnostics(null)
+  }
+}
+
+async function refreshSyncDiagnostics(credentialsOverride?: LocalSyncVaultCredentials | null) {
+  const credentials = credentialsOverride === undefined ? syncVaultCredentials.value : credentialsOverride
+
+  await Promise.all([
+    refreshSyncDeviceList(credentials),
+    refreshSyncConflictEntries()
+  ])
+}
+
+async function refreshAiIntegrationState() {
+  try {
+    aiIntegration.value = await readAiIntegrationMetadata()
+  } catch (error) {
+    console.error('Failed to read AI integration metadata from IndexedDB', error)
+    aiIntegration.value = null
+  }
+
+  isAiUnlocked.value = getIsAiIntegrationUnlocked()
+}
+
+async function refreshSyncDeviceList(credentialsOverride?: LocalSyncVaultCredentials | null) {
+  const credentials = credentialsOverride ?? null
+  syncDevicesError.value = ''
+
+  if (!credentials) {
+    syncDevices.value = []
+    isSyncDevicesLoading.value = false
+    return
+  }
+
+  isSyncDevicesLoading.value = true
+
+  try {
+    syncDevices.value = await listLocalSyncDevices({
+      credentials,
+      deviceId: localSync.deviceId ?? undefined
+    })
+  } catch (error) {
+    console.error('Failed to load synced devices', error)
+    syncDevices.value = []
+    syncDevicesError.value = error instanceof Error ? error.message : 'Could not load synced devices.'
+  } finally {
+    isSyncDevicesLoading.value = false
+  }
+}
+
+async function refreshSyncConflictEntries() {
+  isSyncConflictsLoading.value = true
+  syncConflictsError.value = ''
+
+  try {
+    syncConflictEntries.value = await readLocalSyncConflictEntries(8)
+  } catch (error) {
+    console.error('Failed to load local sync conflict entries', error)
+    syncConflictEntries.value = []
+    syncConflictsError.value = error instanceof Error ? error.message : 'Could not load the local sync conflict log.'
+  } finally {
+    isSyncConflictsLoading.value = false
+  }
+}
+
+async function signOutLocalSync() {
+  await runSyncStatusAction(
+    async () => {
+      await signOutLocalSyncKeepingLocalData()
+      syncDevices.value = []
+    },
+    'Signed out of sync on this device. Local meals, ingredients, and settings were kept.'
+  )
+}
+
+function openSyncDetailsModal() {
+  isSyncDetailsModalOpen.value = true
+  void refreshSyncDiagnostics(syncVaultCredentials.value)
+}
+
+function openSyncDeleteCloudModal() {
+  syncDeleteCloudConfirmValue.value = ''
+  syncDeleteCloudError.value = ''
+  isSyncDeleteCloudModalOpen.value = true
+}
+
+function closeSyncDeleteCloudModal() {
+  if (isSyncDeleteCloudPending.value) {
+    return
+  }
+
+  isSyncDeleteCloudModalOpen.value = false
+}
+
+async function confirmDeleteCloudSyncCopy() {
+  if (isSyncDeleteCloudPending.value) {
+    return
+  }
+
+  const credentials = syncVaultCredentials.value
+
+  if (!credentials) {
+    syncDeleteCloudError.value = 'This device is not connected to a sync vault.'
+    return
+  }
+
+  if (!syncDeleteCloudConfirmationMatches.value) {
+    syncDeleteCloudError.value = 'Type the exact vault ID to confirm cloud deletion.'
+    return
+  }
+
+  syncDeleteCloudError.value = ''
+  syncStatusActionError.value = ''
+  syncStatusActionNotice.value = ''
+  isSyncDeleteCloudPending.value = true
+
+  try {
+    await deleteRemoteSyncVault({
+      credentials,
+      deviceId: localSync.deviceId ?? undefined
+    })
+    await signOutLocalSyncKeepingLocalData()
+    syncDevices.value = []
+    isSyncDeleteCloudModalOpen.value = false
+    syncStatusActionNotice.value = 'Deleted the cloud sync copy and disconnected this device. Local data was kept.'
+    await refreshSyncVaultCredentials()
+  } catch (error) {
+    console.error('Failed to delete remote sync vault', error)
+    syncDeleteCloudError.value = error instanceof Error ? error.message : 'Could not delete the cloud sync copy.'
+  } finally {
+    isSyncDeleteCloudPending.value = false
+  }
+}
+
+async function submitSyncBootstrap() {
+  if (isSyncBootstrapPending.value) {
+    return
+  }
+
+  syncBootstrapError.value = ''
+  syncStatusActionError.value = ''
+  syncStatusActionNotice.value = ''
+
+  const deviceName = syncBootstrapDeviceName.value.trim() || getLocalBrowserDeviceName()
+  const passphrase = syncBootstrapPassphrase.value
+  const passphraseConfirm = syncBootstrapPassphraseConfirm.value
+
+  if (passphrase.trim().length < 8) {
+    syncBootstrapError.value = 'Choose a sync passphrase with at least 8 characters.'
+    return
+  }
+
+  if (passphrase !== passphraseConfirm) {
+    syncBootstrapError.value = 'Passphrases do not match.'
+    return
+  }
+
+  isSyncBootstrapPending.value = true
+  let createdCredentials: LocalSyncVaultCredentials | null = null
+
+  try {
+    await ensureLocalSyncOrchestratorStarted()
+
+    if (!localSync.deviceId) {
+      throw new Error('This device ID is not ready yet. Reload the app and try again.')
+    }
+
+    createdCredentials = await createEncryptedSyncVault({
+      deviceId: localSync.deviceId,
+      deviceName,
+      passphrase
+    })
+
+    syncVaultCredentials.value = createdCredentials
+    await setLocalSyncEnabled(true)
+    await refreshSyncVaultCredentials()
+    await prepareSyncRecoveryExport(createdCredentials, passphrase)
+
+    isSyncBootstrapModalOpen.value = false
+    isSyncRecoveryModalOpen.value = true
+    syncStatusActionNotice.value = 'Encrypted sync is enabled for this device.'
+  } catch (error) {
+    console.error('Failed to bootstrap encrypted sync', error)
+    const baseMessage = error instanceof Error
+      ? error.message
+      : 'Could not create the encrypted sync vault.'
+    syncBootstrapError.value = createdCredentials
+      ? `${baseMessage} The vault was created locally, so you can close this dialog and retry enabling sync.`
+      : baseMessage
+
+    if (createdCredentials) {
+      await refreshSyncVaultCredentials()
+    }
+  } finally {
+    isSyncBootstrapPending.value = false
+  }
+}
+
+async function openSyncRecoveryModal() {
+  syncStatusActionError.value = ''
+
+  try {
+    await prepareSyncRecoveryExport()
+    isSyncRecoveryModalOpen.value = true
+  } catch (error) {
+    console.error('Failed to prepare sync recovery export', error)
+    syncStatusActionError.value = error instanceof Error ? error.message : 'Could not prepare the sync recovery export.'
+  }
+}
+
+function closeSyncRecoveryModal() {
+  isSyncRecoveryModalOpen.value = false
+}
+
+async function copySyncRecoveryPayload() {
+  syncRecoveryError.value = ''
+  syncRecoveryNotice.value = ''
+
+  try {
+    if (!syncRecoveryPayload.value) {
+      await prepareSyncRecoveryExport()
+    }
+
+    if (typeof navigator === 'undefined' || typeof navigator.clipboard?.writeText !== 'function') {
+      throw new Error('Clipboard API unavailable')
+    }
+
+    await navigator.clipboard.writeText(syncRecoveryPayload.value)
+    syncRecoveryNotice.value = 'Recovery key copied.'
+  } catch (error) {
+    console.error('Failed to copy sync recovery payload', error)
+    syncRecoveryError.value = 'Could not copy the recovery key.'
+  }
+}
+
+async function downloadSyncRecoveryPayload() {
+  syncRecoveryError.value = ''
+  syncRecoveryNotice.value = ''
+
+  try {
+    if (!syncRecoveryPayload.value) {
+      await prepareSyncRecoveryExport()
+    }
+
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      throw new Error('Download APIs unavailable')
+    }
+
+    const fileName = buildSyncRecoveryFileName(syncVaultCredentials.value)
+    const blob = new Blob([syncRecoveryPayload.value], { type: 'application/json' })
+    const objectUrl = window.URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = fileName
+    anchor.click()
+    window.URL.revokeObjectURL(objectUrl)
+    syncRecoveryNotice.value = 'Recovery key downloaded.'
+  } catch (error) {
+    console.error('Failed to download sync recovery payload', error)
+    syncRecoveryError.value = 'Could not download the recovery key.'
+  }
+}
+
+async function prepareSyncRecoveryExport(
+  credentialsOverride?: LocalSyncVaultCredentials,
+  passphraseOverride?: string
+) {
+  const credentials = credentialsOverride ?? await readLocalSyncVaultCredentials()
+
+  if (!credentials || credentials.transportMode !== 'e2ee-v1') {
+    throw new Error('This device does not have an encrypted sync vault to export yet.')
+  }
+
+  const passphrase = passphraseOverride ?? await readLocalSyncVaultPassphrase(credentials.vaultId)
+
+  if (!passphrase) {
+    throw new Error('This device does not have the local sync passphrase needed to export a recovery key.')
+  }
+
+  syncRecoveryPayload.value = JSON.stringify(buildSyncRecoveryPayload(credentials, passphrase), null, 2)
+  syncRecoveryError.value = ''
+  syncRecoveryNotice.value = ''
+}
+
+function buildSyncRecoveryPayload(
+  credentials: LocalSyncVaultCredentials,
+  passphrase: string
+): SyncRecoveryExportPayload {
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    vaultId: credentials.vaultId,
+    vaultToken: credentials.vaultToken,
+    transportMode: credentials.transportMode,
+    createdAt: credentials.createdAt,
+    passphrase
+  }
+}
+
+function buildSyncRecoveryFileName(credentials: LocalSyncVaultCredentials | null) {
+  const suffix = credentials?.vaultId ? credentials.vaultId.slice(0, 8) : 'vault'
+  return `vibe-food-sync-recovery-${suffix}.json`
+}
+
+async function openSyncConnectModal() {
+  syncConnectError.value = ''
+  syncConnectQrDataUrl.value = ''
+  syncConnectQrUrl.value = ''
+  syncConnectPassphrase.value = ''
+  isSyncConnectQrExpanded.value = false
+  syncPairingRequest.value = null
+  syncPairingStatus.value = null
+  syncPairingApprovedCredentials.value = null
+  clearSyncPairingStatusPolling()
+
+  isCreatingSyncPairingRequest.value = true
+
+  try {
+    await ensureLocalSyncOrchestratorStarted()
+
+    const requesterDeviceId = localSync.deviceId
+
+    if (!requesterDeviceId) {
+      throw new Error('This device ID is not ready yet. Reload the app and try again.')
+    }
+
+    const pairingPayload = await createLocalSyncPairingRequest({
+      requesterDeviceId,
+      requesterDeviceName: getLocalBrowserDeviceName()
+    })
+
+    syncPairingRequest.value = pairingPayload
+    syncPairingStatus.value = 'pending'
+    isSyncConnectModalOpen.value = true
+    scheduleSyncPairingStatusPoll()
+  } catch (error) {
+    console.error('Failed to create sync pairing request', error)
+    syncConnectError.value = error instanceof Error ? error.message : 'Could not create the sync pairing request.'
+  } finally {
+    isCreatingSyncPairingRequest.value = false
+  }
+}
+
+function getLocalBrowserDeviceName() {
+  if (typeof window === 'undefined') {
+    return 'Browser device'
+  }
+
+  const platform = typeof window.navigator.platform === 'string' && window.navigator.platform.trim()
+    ? window.navigator.platform.trim()
+    : null
+
+  return platform ? `${platform} browser` : 'Browser device'
+}
+
+function formatSyncPairingCode(value: string | null | undefined) {
+  if (!value) {
+    return '------'
+  }
+
+  return value
+}
+
+async function toggleSyncConnectQr() {
+  if (isSyncConnectQrExpanded.value) {
+    isSyncConnectQrExpanded.value = false
+    return
+  }
+
+  if (!syncPairingRequest.value) {
+    return
+  }
+
+  if (typeof window === 'undefined') {
+    syncConnectError.value = 'QR preview is only available in the browser.'
+    return
+  }
+
+  isGeneratingSyncConnectQr.value = true
+
+  try {
+    const authorizeUrl = buildLocalSyncPairingAuthorizeUrl(syncPairingRequest.value.pairingCode, window.location.href)
+    const [{ default: QRCode }] = await Promise.all([
+      import('qrcode')
+    ])
+
+    syncConnectQrUrl.value = authorizeUrl
+    syncConnectQrDataUrl.value = await QRCode.toDataURL(authorizeUrl, {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: 320
+    })
+    isSyncConnectQrExpanded.value = true
+  } catch (error) {
+    console.error('Failed to generate sync pairing QR code', error)
+    syncConnectError.value = error instanceof Error ? error.message : 'Could not generate the sync pairing QR code.'
+  } finally {
+    isGeneratingSyncConnectQr.value = false
+  }
+}
+
+function clearSyncPairingStatusPolling() {
+  if (syncPairingStatusPollTimer === null) {
+    return
+  }
+
+  clearTimeout(syncPairingStatusPollTimer)
+  syncPairingStatusPollTimer = null
+}
+
+function scheduleSyncPairingStatusPoll(delayMs = 1_500) {
+  clearSyncPairingStatusPolling()
+
+  if (!syncPairingRequest.value || !isSyncConnectModalOpen.value) {
+    return
+  }
+
+  syncPairingStatusPollTimer = setTimeout(() => {
+    void pollSyncPairingStatus()
+  }, delayMs)
+}
+
+async function pollSyncPairingStatus() {
+  const pairingPayload = syncPairingRequest.value
+
+  if (!pairingPayload) {
+    return
+  }
+
+  try {
+    const status = await getLocalSyncPairingStatus(pairingPayload)
+    syncPairingStatus.value = status.status
+
+    if (status.status === 'pending') {
+      scheduleSyncPairingStatusPoll()
+      return
+    }
+
+    if (status.status === 'expired') {
+      clearSyncPairingStatusPolling()
+      syncConnectError.value = 'This pairing code expired. Generate a new code and enter it on the already synced device.'
+      return
+    }
+
+    if (!status.credentials) {
+      throw new Error('Pairing was approved, but no sync credentials were returned.')
+    }
+
+    clearSyncPairingStatusPolling()
+    syncPairingApprovedCredentials.value = toLocalSyncVaultCredentials(status.credentials)
+    syncConnectError.value = syncConnectPassphrase.value.trim()
+      ? ''
+      : 'Authorization complete. Enter the sync passphrase to finish linking this device.'
+  } catch (error) {
+    console.error('Failed to poll sync pairing status', error)
+    clearSyncPairingStatusPolling()
+    syncConnectError.value = error instanceof Error ? error.message : 'Could not check the sync pairing status.'
+  }
+}
+
+async function completeSyncConnectPairing() {
+  if (isCompletingSyncPairingConnect.value) {
+    return
+  }
+
+  const credentials = syncPairingApprovedCredentials.value
+
+  if (!credentials) {
+    syncConnectError.value = 'Wait for the existing synced device to approve this code first.'
+    return
+  }
+
+  const passphrase = syncConnectPassphrase.value
+
+  if (passphrase.trim().length < 8) {
+    syncConnectError.value = 'Enter the sync passphrase for this encrypted vault.'
+    return
+  }
+
+  isCompletingSyncPairingConnect.value = true
+  syncConnectError.value = ''
+  syncStatusActionError.value = ''
+  syncStatusActionNotice.value = ''
+
+  try {
+    await ensureLocalSyncOrchestratorStarted()
+
+    const deviceId = localSync.deviceId
+
+    if (!deviceId) {
+      throw new Error('This device ID is not ready yet. Reload the app and try again.')
+    }
+
+    const keyRecord = await fetchSyncVaultKeyRecord(credentials, deviceId)
+    await unwrapSyncVaultKeyRecord(keyRecord, passphrase)
+
+    await connectLocalSyncToExistingVault({
+      ...credentials,
+      passphrase
+    })
+    await refreshSyncVaultCredentials()
+    isSyncConnectModalOpen.value = false
+    syncStatusActionNotice.value = 'This device is now linked to the encrypted sync vault.'
+  } catch (error) {
+    console.error('Failed to finish encrypted sync linking', error)
+    syncConnectError.value = error instanceof Error ? error.message : 'Could not finish linking this encrypted sync vault.'
+  } finally {
+    isCompletingSyncPairingConnect.value = false
+  }
+}
+
+function closeSyncConnectModal() {
+  isSyncConnectModalOpen.value = false
+  syncConnectError.value = ''
+}
+
+function openSyncAuthorizeModal() {
+  syncAuthorizeCode.value = ''
+  syncAuthorizeError.value = ''
+  isSyncAuthorizeModalOpen.value = true
+}
+
+function closeSyncAuthorizeModal() {
+  isSyncAuthorizeModalOpen.value = false
+  syncAuthorizeCode.value = ''
+  syncAuthorizeError.value = ''
+}
+
+async function prepareSyncAuthorizeModalFromQuery(value: string) {
+  if (isHandlingSyncAuthorizeQuery.value) {
+    return
+  }
+
+  isHandlingSyncAuthorizeQuery.value = true
+
+  try {
+    await clearSyncAuthorizeQueryFromRoute()
+
+    const pairingCode = normalizeLocalSyncPairingCode(value)
+
+    if (!pairingCode) {
+      syncStatusActionError.value = 'The scanned pairing QR code was invalid.'
+      return
+    }
+
+    const currentCredentials = await readLocalSyncVaultCredentials()
+
+    if (!currentCredentials) {
+      syncStatusActionError.value = 'This device must already be synced before it can authorize another device.'
+      return
+    }
+
+    if (currentCredentials.transportMode !== 'e2ee-v1') {
+      syncStatusActionError.value = 'Only encrypted sync vaults can authorize device linking.'
+      return
+    }
+
+    syncVaultCredentials.value = currentCredentials
+    syncAuthorizeCode.value = pairingCode
+    syncAuthorizeError.value = ''
+    isSyncAuthorizeModalOpen.value = true
+  } finally {
+    isHandlingSyncAuthorizeQuery.value = false
+  }
+}
+
+async function clearSyncAuthorizeQueryFromRoute() {
+  const { [syncPairingAuthorizeQueryKey]: _removedSyncAuthorizeQuery, ...nextQuery } = route.query
+  await router.replace({ query: nextQuery })
+}
+
+async function authorizeSyncPairingCode() {
+  isAuthorizingSyncPairing.value = true
+  syncAuthorizeError.value = ''
+  syncStatusActionError.value = ''
+  syncStatusActionNotice.value = ''
+
+  try {
+    const pairingCode = syncAuthorizeCode.value.trim()
+
+    if (!/^[0-9A-Za-z]{6}$/.test(pairingCode)) {
+      throw new Error('Enter the exact 6-character pairing code. Codes are case-sensitive.')
+    }
+
+    const currentCredentials = await readLocalSyncVaultCredentials()
+
+    if (!currentCredentials) {
+      throw new Error('Enable encrypted sync on this device first so it can authorize another device.')
+    }
+
+    if (currentCredentials.transportMode !== 'e2ee-v1') {
+      throw new Error('Only encrypted sync vaults can authorize another device.')
+    }
+
+    await ensureLocalSyncOrchestratorStarted()
+
+    const approverDeviceId = localSync.deviceId
+
+    if (!approverDeviceId) {
+      throw new Error('This device ID is not ready yet. Reload the app and try again.')
+    }
+
+    const result = await authorizeLocalSyncPairingRequest({
+      pairingCode,
+      credentials: currentCredentials,
+      deviceId: approverDeviceId
+    })
+
+    if (result.status === 'expired') {
+      throw new Error('This device approval request expired before it could be approved.')
+    }
+
+    if (result.status !== 'approved' || !result.credentials) {
+      throw new Error('Could not approve this device request.')
+    }
+
+    syncVaultCredentials.value = currentCredentials
+    syncStatusActionNotice.value = `Authorized ${result.requesterDeviceName} to join this encrypted sync vault.`
+    closeSyncAuthorizeModal()
+  } catch (error) {
+    console.error('Failed to authorize sync pairing code', error)
+    syncAuthorizeError.value = error instanceof Error ? error.message : 'Could not authorize this device.'
+  } finally {
+    isAuthorizingSyncPairing.value = false
+  }
+}
+
+function toLocalSyncVaultCredentials(credentials: SyncPairingCredentialsPayload): LocalSyncVaultCredentials {
+  if (credentials.transportMode !== 'e2ee-v1') {
+    throw new Error('This pairing response did not contain an encrypted sync vault.')
+  }
+
+  return {
+    version: 1,
+    vaultId: credentials.vaultId,
+    vaultToken: credentials.vaultToken,
+    transportMode: credentials.transportMode,
+    createdAt: credentials.createdAt
+  }
 }
 
 async function saveSettings() {
@@ -470,7 +1463,6 @@ function providerLabel(provider: AiProvider) {
 
 function openAiSetupModal() {
   resetAiSetupModal()
-  aiSetupStep.value = 'pin'
   isAiSetupModalOpen.value = true
 }
 
@@ -480,33 +1472,15 @@ function closeAiSetupModal() {
 }
 
 function resetAiSetupModal() {
-  aiSetupStep.value = 'pin'
   aiSetupError.value = ''
-  aiSetupPin.value = ''
   aiSetupProvider.value = DEFAULT_AI_PROVIDER
   aiSetupApiKey.value = ''
-}
-
-function continueAiSetupToProviderStep() {
-  aiSetupError.value = ''
-
-  if (!isValidAiPin(aiSetupPin.value)) {
-    aiSetupError.value = 'Encryption password must be exactly 4 digits.'
-    return
-  }
-
-  aiSetupStep.value = 'provider'
 }
 
 async function saveAiIntegrationSetup() {
   aiSetupError.value = ''
   aiIntegrationError.value = ''
   aiIntegrationNotice.value = ''
-
-  if (!isValidAiPin(aiSetupPin.value)) {
-    aiSetupError.value = 'Encryption password must be exactly 4 digits.'
-    return
-  }
 
   const apiKey = aiSetupApiKey.value.trim()
 
@@ -526,11 +1500,10 @@ async function saveAiIntegrationSetup() {
 
     aiIntegration.value = await setupAiIntegration({
       provider: aiSetupProvider.value,
-      apiKey,
-      pin: aiSetupPin.value
+      apiKey
     })
     isAiUnlocked.value = true
-    aiIntegrationNotice.value = 'AI integration set up and unlocked in this tab.'
+    aiIntegrationNotice.value = 'AI integration saved.'
     dangerError.value = ''
     dangerNotice.value = ''
     closeAiSetupModal()
@@ -561,7 +1534,7 @@ async function submitAiUnlock() {
   aiIntegrationNotice.value = ''
 
   if (!isValidAiPin(aiUnlockPin.value)) {
-    aiUnlockError.value = 'Encryption password must be exactly 4 digits.'
+    aiUnlockError.value = 'Legacy encryption password must be exactly 4 digits.'
     return
   }
 
@@ -570,20 +1543,13 @@ async function submitAiUnlock() {
   try {
     aiIntegration.value = await unlockAiIntegration(aiUnlockPin.value)
     isAiUnlocked.value = true
-    aiIntegrationNotice.value = 'AI integration unlocked in this tab.'
+    aiIntegrationNotice.value = 'Legacy AI integration upgraded.'
     closeAiUnlockModal()
   } catch (error) {
     aiUnlockError.value = error instanceof Error ? error.message : 'Could not unlock AI integration.'
   } finally {
     isSavingAiIntegration.value = false
   }
-}
-
-function lockAiIntegrationForSession() {
-  lockAiIntegration()
-  isAiUnlocked.value = false
-  aiIntegrationNotice.value = 'AI integration locked.'
-  aiIntegrationError.value = ''
 }
 
 async function clearAiIntegrationFromDevice() {
@@ -596,7 +1562,7 @@ async function clearAiIntegrationFromDevice() {
 
   if (typeof window !== 'undefined') {
     const confirmed = window.confirm(
-      'This will remove the encrypted AI integration key from this browser. Continue?'
+      'This will remove the stored AI integration key from this browser and any linked devices that sync it. Continue?'
     )
 
     if (!confirmed) {
@@ -610,7 +1576,7 @@ async function clearAiIntegrationFromDevice() {
     await clearAiIntegration()
     aiIntegration.value = null
     isAiUnlocked.value = false
-    aiIntegrationNotice.value = 'AI integration removed from this browser.'
+    aiIntegrationNotice.value = 'AI integration removed.'
   } catch (error) {
     console.error('Failed to clear AI integration', error)
     aiIntegrationError.value = 'Could not clear AI integration. Try again.'
@@ -625,7 +1591,6 @@ function openAiChangeProviderModal() {
   }
 
   aiChangeProviderError.value = ''
-  aiChangeProviderCurrentPin.value = ''
   aiChangeProviderProvider.value = aiIntegration.value.provider
   aiChangeProviderApiKey.value = ''
   isAiChangeProviderModalOpen.value = true
@@ -633,7 +1598,6 @@ function openAiChangeProviderModal() {
 
 function closeAiChangeProviderModal() {
   aiChangeProviderError.value = ''
-  aiChangeProviderCurrentPin.value = ''
   aiChangeProviderProvider.value = aiIntegration.value?.provider ?? DEFAULT_AI_PROVIDER
   aiChangeProviderApiKey.value = ''
   isAiChangeProviderModalOpen.value = false
@@ -643,11 +1607,6 @@ async function submitAiChangeProvider() {
   aiChangeProviderError.value = ''
   aiIntegrationError.value = ''
   aiIntegrationNotice.value = ''
-
-  if (!isValidAiPin(aiChangeProviderCurrentPin.value)) {
-    aiChangeProviderError.value = 'Current encryption password must be exactly 4 digits.'
-    return
-  }
 
   const apiKey = aiChangeProviderApiKey.value.trim()
 
@@ -667,68 +1626,16 @@ async function submitAiChangeProvider() {
 
     aiIntegration.value = await replaceAiIntegration({
       provider: aiChangeProviderProvider.value,
-      apiKey,
-      currentPin: aiChangeProviderCurrentPin.value
+      apiKey
     })
     isAiUnlocked.value = true
-    aiIntegrationNotice.value = 'Provider/key updated and re-encrypted.'
+    aiIntegrationNotice.value = 'Provider/key updated.'
     closeAiChangeProviderModal()
   } catch (error) {
     console.error('Failed to change AI provider/key', error)
     aiChangeProviderError.value = error instanceof Error ? error.message : 'Could not update provider/key.'
   } finally {
     isTestingAiIntegrationKey.value = false
-    isSavingAiIntegration.value = false
-  }
-}
-
-function openAiChangePasswordModal() {
-  if (!aiIntegration.value) {
-    return
-  }
-
-  aiChangePasswordError.value = ''
-  aiChangePasswordCurrentPin.value = ''
-  aiChangePasswordNewPin.value = ''
-  isAiChangePasswordModalOpen.value = true
-}
-
-function closeAiChangePasswordModal() {
-  aiChangePasswordError.value = ''
-  aiChangePasswordCurrentPin.value = ''
-  aiChangePasswordNewPin.value = ''
-  isAiChangePasswordModalOpen.value = false
-}
-
-async function submitAiChangePassword() {
-  aiChangePasswordError.value = ''
-  aiIntegrationError.value = ''
-  aiIntegrationNotice.value = ''
-
-  if (!isValidAiPin(aiChangePasswordCurrentPin.value)) {
-    aiChangePasswordError.value = 'Current encryption password must be exactly 4 digits.'
-    return
-  }
-
-  if (!isValidAiPin(aiChangePasswordNewPin.value)) {
-    aiChangePasswordError.value = 'New encryption password must be exactly 4 digits.'
-    return
-  }
-
-  isSavingAiIntegration.value = true
-
-  try {
-    aiIntegration.value = await changeAiIntegrationPassword({
-      currentPin: aiChangePasswordCurrentPin.value,
-      newPin: aiChangePasswordNewPin.value
-    })
-    isAiUnlocked.value = true
-    aiIntegrationNotice.value = 'Encryption password updated.'
-    closeAiChangePasswordModal()
-  } catch (error) {
-    console.error('Failed to change AI encryption password', error)
-    aiChangePasswordError.value = error instanceof Error ? error.message : 'Could not change encryption password.'
-  } finally {
     isSavingAiIntegration.value = false
   }
 }
@@ -788,46 +1695,6 @@ function resetRecommendationInputs() {
   recommendationError.value = ''
 }
 
-async function generateExampleData() {
-  sampleDataError.value = ''
-  sampleDataNotice.value = ''
-
-  isGeneratingExampleData.value = true
-
-  try {
-    const [existingIngredients, existingMeals] = await Promise.all([
-      readIngredients(),
-      readMeals()
-    ])
-
-    const { ingredients: exampleIngredients, meals: exampleMeals } = createExampleData()
-
-    const mergedIngredients = [
-      ...existingIngredients.filter(item => !collectionItemHasIdPrefix(item, EXAMPLE_INGREDIENT_ID_PREFIX)),
-      ...exampleIngredients
-    ]
-    const mergedMeals = [
-      ...existingMeals.filter(item => !collectionItemHasIdPrefix(item, EXAMPLE_MEAL_ID_PREFIX)),
-      ...exampleMeals
-    ]
-
-    await Promise.all([
-      writeIngredients(mergedIngredients),
-      writeMeals(mergedMeals)
-    ])
-
-    sampleDataNotice.value = `Added example data: ${exampleIngredients.length} ingredients and ${exampleMeals.length} meals across the last 7 days.`
-    sampleDataError.value = ''
-    dangerError.value = ''
-    dangerNotice.value = ''
-  } catch (error) {
-    console.error('Failed to generate example data', error)
-    sampleDataError.value = 'Could not generate example data. Try again.'
-  } finally {
-    isGeneratingExampleData.value = false
-  }
-}
-
 async function clearAllLocalData() {
   dangerError.value = ''
   dangerNotice.value = ''
@@ -860,12 +1727,9 @@ async function clearAllLocalData() {
     aiIntegrationNotice.value = ''
     syncStatusActionError.value = ''
     syncStatusActionNotice.value = ''
-    sampleDataError.value = ''
-    sampleDataNotice.value = ''
     isRecommendationModalOpen.value = false
     isAiSetupModalOpen.value = false
     isAiChangeProviderModalOpen.value = false
-    isAiChangePasswordModalOpen.value = false
     isAiUnlockModalOpen.value = false
     dangerNotice.value = 'All local data was cleared from this browser.'
   } catch (error) {
@@ -874,113 +1738,6 @@ async function clearAllLocalData() {
   } finally {
     isClearingData.value = false
   }
-}
-
-function createExampleData() {
-  const ingredientCreatedAt = daysAgoAtIso(6, 9, 0)
-  const ingredients = EXAMPLE_INGREDIENT_SEEDS.map(seed => createExampleIngredientRecord(seed, ingredientCreatedAt))
-  const ingredientsByUuid = new Map(ingredients.map(ingredient => [ingredient.uuid, ingredient]))
-  const meals: ExampleMealRecord[] = []
-
-  for (let daysAgo = 0; daysAgo < 7; daysAgo += 1) {
-    const dayPlan = EXAMPLE_DAY_MEAL_PLAN_INDEXES[daysAgo] ?? [0, 1, 2]
-
-    for (let templateIndex = 0; templateIndex < dayPlan.length; templateIndex += 1) {
-      const template = EXAMPLE_MEAL_SEEDS[dayPlan[templateIndex] ?? -1]
-
-      if (!template) {
-        continue
-      }
-
-      const meal = createExampleMealRecord({
-        seed: template,
-        daysAgo,
-        index: templateIndex,
-        ingredientsByUuid
-      })
-
-      meals.push(meal)
-    }
-  }
-
-  return { ingredients, meals }
-}
-
-function createExampleIngredientRecord(seed: ExampleIngredientSeed, createdAt: string): ExampleIngredientRecord {
-  return {
-    id: `${EXAMPLE_INGREDIENT_ID_PREFIX}${seed.slug}`,
-    uuid: seed.uuid,
-    name: seed.name,
-    unit: seed.unit,
-    portionSize: roundToThree(seed.portionSize),
-    kcal: Math.round(seed.kcal),
-    protein: roundToOne(seed.protein),
-    carbs: roundToOne(seed.carbs),
-    fat: roundToOne(seed.fat),
-    kcalPerUnit: roundToSix(seed.kcal / seed.portionSize),
-    proteinPerUnit: roundToSix(seed.protein / seed.portionSize),
-    carbsPerUnit: roundToSix(seed.carbs / seed.portionSize),
-    fatPerUnit: roundToSix(seed.fat / seed.portionSize),
-    createdAt
-  }
-}
-
-function createExampleMealRecord(input: {
-  seed: ExampleMealSeed
-  daysAgo: number
-  index: number
-  ingredientsByUuid: Map<string, ExampleIngredientRecord>
-}): ExampleMealRecord {
-  let calories = 0
-  let protein = 0
-  let carbs = 0
-  let fat = 0
-
-  const ingredients: ExampleMealIngredientSnapshot[] = input.seed.items.flatMap((item) => {
-    const ingredient = input.ingredientsByUuid.get(item.ingredientUuid)
-
-    if (!ingredient) {
-      return []
-    }
-
-    calories += ingredient.kcalPerUnit * item.amount
-    protein += ingredient.proteinPerUnit * item.amount
-    carbs += ingredient.carbsPerUnit * item.amount
-    fat += ingredient.fatPerUnit * item.amount
-
-    return [{
-      name: ingredient.name,
-      amount: roundToThree(item.amount),
-      unit: ingredient.unit
-    }]
-  })
-
-  return {
-    id: `${EXAMPLE_MEAL_ID_PREFIX}${input.daysAgo}-${input.seed.slug}-${input.index}`,
-    name: input.seed.name,
-    calories: Math.round(calories),
-    protein: roundToOne(protein),
-    carbs: roundToOne(carbs),
-    fat: roundToOne(fat),
-    ingredients,
-    createdAt: daysAgoAtIso(input.daysAgo, input.seed.hour, input.seed.minute)
-  }
-}
-
-function daysAgoAtIso(daysAgo: number, hour: number, minute: number) {
-  const date = new Date()
-  date.setHours(hour, minute, 0, 0)
-  date.setDate(date.getDate() - daysAgo)
-  return date.toISOString()
-}
-
-function collectionItemHasIdPrefix(value: unknown, prefix: string) {
-  if (!value || typeof value !== 'object') {
-    return false
-  }
-
-  const maybeId = (value as { id?: unknown }).id
-  return typeof maybeId === 'string' && maybeId.startsWith(prefix)
 }
 
 function setGoalFormDefaults() {
@@ -1008,16 +1765,28 @@ function createDefaultAppSettings(): AppSettings {
   }
 }
 
-function roundToOne(value: number) {
-  return Math.round(value * 10) / 10
-}
+function normalizeGoalSettingInput(value: unknown) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? Math.round(value) : null
+  }
 
-function roundToThree(value: number) {
-  return Math.round(value * 1000) / 1000
-}
+  if (typeof value !== 'string') {
+    return null
+  }
 
-function roundToSix(value: number) {
-  return Math.round(value * 1_000_000) / 1_000_000
+  const trimmed = value.trim()
+
+  if (!trimmed) {
+    return null
+  }
+
+  const parsed = Number(trimmed)
+
+  if (!Number.isFinite(parsed)) {
+    return trimmed
+  }
+
+  return Math.round(parsed)
 }
 
 function calculateRecommendedGoals(input: {
@@ -1131,7 +1900,7 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
           Settings
         </h1>
         <p class="text-sm text-muted">
-          Configure app defaults stored only in this browser.
+          Configure this browser and the settings that sync across your linked devices.
         </p>
       </div>
 
@@ -1146,10 +1915,39 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
 
     <UCard>
       <div class="space-y-4">
-        <div>
-          <h2 class="text-lg font-semibold text-highlighted">
-            Goals
-          </h2>
+        <div class="space-y-2">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-center gap-2">
+              <h2 class="text-lg font-semibold text-highlighted">
+                Goals
+              </h2>
+              <UTooltip text="All settings in this panel are synced to linked devices.">
+                <span class="inline-flex">
+                  <UIcon
+                    name="i-lucide-cloud-check"
+                    class="size-4 text-primary"
+                    aria-hidden="true"
+                  />
+                </span>
+              </UTooltip>
+            </div>
+
+            <UDropdownMenu
+              v-slot="{ open }"
+              :items="goalsActionMenuItems"
+              :content="{ align: 'end' }"
+              :ui="{ content: 'min-w-64' }"
+            >
+              <UButton
+                type="button"
+                color="neutral"
+                variant="soft"
+                icon="i-lucide-ellipsis"
+                aria-label="Open goals actions"
+                :class="[open ? 'bg-elevated' : undefined]"
+              />
+            </UDropdownMenu>
+          </div>
           <p class="text-sm text-muted">
             These goals are used on the Meals page for the calorie and macro gauges.
           </p>
@@ -1247,30 +2045,6 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
             </div>
           </div>
 
-          <div class="rounded-xl border border-default bg-muted/15 px-4 py-3">
-            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p class="text-sm font-medium text-highlighted">
-                  Need a starting point?
-                </p>
-                <p class="text-sm text-muted">
-                  Use a general recommendation based on age, sex, height, weight, activity level and objective.
-                </p>
-              </div>
-
-              <UButton
-                type="button"
-                color="neutral"
-                variant="soft"
-                icon="i-lucide-wand-sparkles"
-                class="justify-center"
-                @click="openRecommendationModal"
-              >
-                Recommend goals
-              </UButton>
-            </div>
-          </div>
-
           <p
             v-if="formError"
             class="text-sm text-error"
@@ -1285,13 +2059,16 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
             {{ saveNotice }}
           </p>
 
-          <div class="flex justify-end">
+          <div
+            v-if="hasUnsavedGoalChanges"
+            class="flex justify-end"
+          >
             <UButton
               type="submit"
               size="lg"
               :loading="isSaving"
             >
-              Save settings
+              Save goals
             </UButton>
           </div>
         </form>
@@ -1300,103 +2077,182 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
 
     <UCard>
       <div class="space-y-4">
-        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h2 class="text-lg font-semibold text-highlighted">
-              Sync (Phase 2)
-            </h2>
+        <div class="space-y-3">
+          <div class="space-y-2">
+            <div class="flex items-start justify-between gap-3">
+              <h2 class="text-lg font-semibold text-highlighted">
+                Sync
+              </h2>
+
+              <UDropdownMenu
+                v-if="showSyncActionMenu"
+                v-slot="{ open }"
+                :items="syncActionMenuItems"
+                :content="{ align: 'end' }"
+                :ui="{ content: 'min-w-64' }"
+              >
+                <UButton
+                  type="button"
+                  color="neutral"
+                  variant="soft"
+                  icon="i-lucide-ellipsis"
+                  aria-label="Open sync actions"
+                  :class="[open ? 'bg-elevated' : undefined]"
+                />
+              </UDropdownMenu>
+            </div>
+
             <p class="text-sm text-muted">
-              Local sync orchestration state only. Cloud sync is not connected yet.
+              {{ syncPanelDescription }}
             </p>
           </div>
 
-          <div class="flex flex-wrap gap-2">
+          <div
+            v-if="hasStoredSyncVault"
+            class="flex flex-wrap items-center gap-2"
+          >
             <UBadge
               :color="syncStatusColor"
               variant="soft"
             >
-              {{ syncStatusLabel }}
-            </UBadge>
-            <UBadge
-              :color="localSync.enabled ? 'primary' : 'neutral'"
-              variant="soft"
-            >
-              {{ localSync.enabled ? 'Enabled' : 'Disabled' }}
+              Sync status: {{ syncStatusLabel }}
             </UBadge>
             <UBadge
               :color="localSync.isOnline ? 'success' : 'error'"
               variant="soft"
             >
-              {{ localSync.isOnline ? 'Online' : 'Offline' }}
+              Internet: {{ localSync.isOnline ? 'Online' : 'Offline' }}
+            </UBadge>
+            <UBadge
+              :color="hasStoredSyncVault ? 'primary' : 'neutral'"
+              variant="soft"
+            >
+              Vault: {{ hasStoredSyncVault ? 'Linked' : 'Not set up' }}
             </UBadge>
           </div>
         </div>
 
-        <div class="grid gap-4 sm:grid-cols-2">
-          <div class="space-y-1">
-            <p class="text-xs font-medium uppercase tracking-wide text-muted">
-              Device ID
-            </p>
-            <code
-              class="block break-all rounded-md border border-default bg-muted/20 px-2 py-1 text-sm text-highlighted"
-              :title="localSync.deviceId ?? undefined"
+        <template v-if="!hasStoredSyncVault">
+          <div class="flex flex-wrap justify-end gap-2">
+            <UButton
+              type="button"
+              color="neutral"
+              variant="soft"
+              icon="i-lucide-link"
+              :disabled="isSyncBootstrapPending || isCreatingSyncPairingRequest"
+              @click="openSyncConnectModal"
             >
-              {{ formatLocalSyncId(localSync.deviceId) }}
-            </code>
-          </div>
+              Link existing device
+            </UButton>
 
-          <div class="space-y-1">
-            <p class="text-xs font-medium uppercase tracking-wide text-muted">
-              Vault ID
-            </p>
-            <code
-              class="block break-all rounded-md border border-default bg-muted/20 px-2 py-1 text-sm text-highlighted"
-              :title="localSync.vaultId ?? undefined"
+            <UButton
+              type="button"
+              icon="i-lucide-lock-keyhole"
+              :disabled="isSyncBootstrapPending || isCreatingSyncPairingRequest"
+              @click="openSyncBootstrapModal"
             >
-              {{ formatLocalSyncId(localSync.vaultId) }}
-            </code>
+              Set up encrypted sync
+            </UButton>
           </div>
 
-          <div class="space-y-1">
-            <p class="text-xs font-medium uppercase tracking-wide text-muted">
-              Last attempt
-            </p>
-            <p class="text-sm text-highlighted">
-              {{ formatLocalSyncDateTime(localSync.lastSyncAttemptAt) }}
-            </p>
+          <div class="grid gap-4 lg:grid-cols-3">
+            <div class="rounded-xl border border-default bg-default px-4 py-4">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Fully E2EE
+              </p>
+              <p class="mt-2 text-sm font-medium text-highlighted">
+                Encrypted before upload
+              </p>
+              <p class="mt-2 text-xs text-muted">
+                Your data is encrypted on-device before it leaves this browser and decrypted only on linked devices.
+              </p>
+            </div>
+
+            <div class="rounded-xl border border-default bg-default px-4 py-4">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Cloud copy
+              </p>
+              <p class="mt-2 text-sm font-medium text-highlighted">
+                Server stores ciphertext
+              </p>
+              <p class="mt-2 text-xs text-muted">
+                Meals, ingredients, settings, and AI integration data stay unreadable to the server.
+              </p>
+            </div>
+
+            <div class="rounded-xl border border-default bg-default px-4 py-4">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Device linking
+              </p>
+              <p class="mt-2 text-sm font-medium text-highlighted">
+                Approve new devices safely
+              </p>
+              <p class="mt-2 text-xs text-muted">
+                Link a new device from one you already trust, then finish setup locally with your sync passphrase.
+              </p>
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="rounded-2xl border border-default bg-muted/10 px-4 py-4">
+            <div class="space-y-2">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                This device
+              </p>
+              <div>
+                <h3 class="text-base font-semibold text-highlighted">
+                  {{ syncOverviewTitle }}
+                </h3>
+                <p class="mt-1 text-sm text-muted">
+                  {{ syncOverviewDescription }}
+                </p>
+              </div>
+            </div>
           </div>
 
-          <div class="space-y-1">
-            <p class="text-xs font-medium uppercase tracking-wide text-muted">
-              Last success
-            </p>
-            <p class="text-sm text-highlighted">
-              {{ formatLocalSyncDateTime(localSync.lastSyncSuccessAt) }}
-            </p>
+          <div class="grid gap-4 lg:grid-cols-3">
+            <div class="rounded-xl border border-default bg-default px-4 py-4">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Last successful sync
+              </p>
+              <p class="mt-2 text-base font-semibold text-highlighted">
+                {{ syncLastSuccessSummary }}
+              </p>
+              <p class="mt-2 text-xs text-muted">
+                The most recent completed sync on this device.
+              </p>
+            </div>
+
+            <div class="rounded-xl border border-default bg-default px-4 py-4">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Linked devices
+              </p>
+              <p class="mt-2 text-base font-semibold text-highlighted">
+                {{ syncDeviceSummary }}
+              </p>
+              <p class="mt-2 text-xs text-muted">
+                Open details to see device names, full IDs, and last seen times.
+              </p>
+            </div>
+
+            <div class="rounded-xl border border-default bg-default px-4 py-4">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Recent issues
+              </p>
+              <p class="mt-2 text-base font-semibold text-highlighted">
+                {{ syncConflictSummary }}
+              </p>
+              <p class="mt-2 text-xs text-muted">
+                Technical logs, retry info, and conflict history are available in details.
+              </p>
+            </div>
           </div>
 
-          <div class="space-y-1">
-            <p class="text-xs font-medium uppercase tracking-wide text-muted">
-              Trigger
-            </p>
-            <p class="text-sm text-highlighted">
-              {{ localSync.lastTriggerReason ?? 'None yet' }}
-            </p>
-          </div>
-
-          <div class="space-y-1">
-            <p class="text-xs font-medium uppercase tracking-wide text-muted">
-              Engine state
-            </p>
-            <p class="text-sm text-highlighted">
-              {{ statusBadgeLabel(localSync.status) }}
-            </p>
-          </div>
-        </div>
-
-        <p class="text-xs text-muted">
-          Phase 2 stores local sync lifecycle metadata and trigger state only. A future phase will add optional encrypted cloud sync.
-        </p>
+          <p class="text-xs text-muted">
+            Export a recovery key after setup. It can restore access if you ever lose your already linked devices.
+          </p>
+        </template>
 
         <p
           v-if="syncStatusActionError || localSync.lastError"
@@ -1411,75 +2267,28 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
         >
           {{ syncStatusActionNotice }}
         </p>
-
-        <div class="flex flex-wrap justify-end gap-2">
-          <UButton
-            v-if="!localSync.enabled"
-            type="button"
-            icon="i-lucide-toggle-right"
-            :loading="isSyncActionPending"
-            @click="enableLocalSyncOrchestrator"
-          >
-            Enable local sync
-          </UButton>
-
-          <UButton
-            v-else-if="localSync.isPaused"
-            type="button"
-            icon="i-lucide-play"
-            :loading="isSyncActionPending"
-            @click="resumeLocalSyncOrchestrator"
-          >
-            Resume
-          </UButton>
-
-          <UButton
-            v-else
-            type="button"
-            color="neutral"
-            variant="soft"
-            icon="i-lucide-pause"
-            :loading="isSyncActionPending"
-            @click="pauseLocalSyncOrchestrator"
-          >
-            Pause
-          </UButton>
-
-          <UButton
-            type="button"
-            color="neutral"
-            variant="soft"
-            icon="i-lucide-refresh-cw"
-            :loading="isSyncActionPending"
-            :disabled="!localSync.enabled || localSync.isPaused || isSyncActionPending"
-            @click="runManualLocalSyncCheck"
-          >
-            Run local sync check
-          </UButton>
-
-          <UButton
-            v-if="localSync.enabled"
-            type="button"
-            color="neutral"
-            variant="soft"
-            icon="i-lucide-toggle-left"
-            :loading="isSyncActionPending"
-            @click="disableLocalSyncOrchestrator"
-          >
-            Disable
-          </UButton>
-        </div>
       </div>
     </UCard>
 
     <UCard>
       <div class="space-y-4">
         <div>
-          <h2 class="text-lg font-semibold text-highlighted">
-            AI Integration
-          </h2>
+          <div class="flex items-center gap-2">
+            <h2 class="text-lg font-semibold text-highlighted">
+              AI Integration
+            </h2>
+            <UTooltip text="All settings in this panel are synced to linked devices.">
+              <span class="inline-flex">
+                <UIcon
+                  name="i-lucide-cloud-check"
+                  class="size-4 text-primary"
+                  aria-hidden="true"
+                />
+              </span>
+            </UTooltip>
+          </div>
           <p class="text-sm text-muted">
-            Connect one AI provider key and protect it with a local 4-digit encryption password. The key is encrypted before being stored in this browser.
+            Connect one AI provider key and keep it available across linked devices. If sync is enabled, the cloud copy is protected by your encrypted sync vault while the key stays directly usable in this browser.
           </p>
         </div>
 
@@ -1532,17 +2341,22 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
                   {{ aiIntegration.keyPreview }}…
                 </code>
                 <UBadge
-                  :color="isAiUnlocked ? 'success' : 'neutral'"
+                  :color="aiIntegrationStatusColor"
                   variant="soft"
                 >
-                  {{ isAiUnlocked ? 'Unlocked' : 'Locked' }}
+                  {{ aiIntegrationStatusLabel }}
                 </UBadge>
               </div>
             </div>
           </div>
 
           <p class="text-xs text-muted">
-            The decrypted API key is kept only in memory after unlock and is cleared when you lock it or reload the page.
+            <template v-if="hasLegacyEncryptedAiIntegration">
+              This key still uses the old local password format. Unlock it once to upgrade it to the simpler synced format.
+            </template>
+            <template v-else>
+              The API key is stored directly in this browser so AI features can use it immediately. If sync is enabled, the cloud copy remains protected by your encrypted sync vault.
+            </template>
           </p>
 
           <p
@@ -1561,7 +2375,7 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
 
           <div class="flex flex-wrap justify-end gap-2">
             <UButton
-              v-if="!isAiUnlocked"
+              v-if="hasLegacyEncryptedAiIntegration && !isAiUnlocked"
               type="button"
               color="neutral"
               variant="soft"
@@ -1569,18 +2383,7 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
               :loading="isSavingAiIntegration"
               @click="openAiUnlockModal"
             >
-              Unlock
-            </UButton>
-
-            <UButton
-              v-else
-              type="button"
-              color="neutral"
-              variant="soft"
-              icon="i-lucide-lock"
-              @click="lockAiIntegrationForSession"
-            >
-              Lock
+              Upgrade legacy key
             </UButton>
 
             <UButton
@@ -1591,18 +2394,7 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
               :loading="isSavingAiIntegration || isTestingAiIntegrationKey"
               @click="openAiChangeProviderModal"
             >
-              Change provider
-            </UButton>
-
-            <UButton
-              type="button"
-              color="neutral"
-              variant="soft"
-              icon="i-lucide-key-round"
-              :loading="isSavingAiIntegration"
-              @click="openAiChangePasswordModal"
-            >
-              Change encryption password
+              Change provider/key
             </UButton>
 
             <UButton
@@ -1616,46 +2408,6 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
               Clear key
             </UButton>
           </div>
-        </div>
-      </div>
-    </UCard>
-
-    <UCard>
-      <div class="space-y-4">
-        <div>
-          <h2 class="text-lg font-semibold text-highlighted">
-            Sample Data
-          </h2>
-          <p class="text-sm text-muted">
-            Generate example ingredients and meal history for the last 7 days. Existing sample entries are replaced; your other data is kept.
-          </p>
-        </div>
-
-        <p
-          v-if="sampleDataError"
-          class="text-sm text-error"
-        >
-          {{ sampleDataError }}
-        </p>
-
-        <p
-          v-else-if="sampleDataNotice"
-          class="text-sm text-success"
-        >
-          {{ sampleDataNotice }}
-        </p>
-
-        <div class="flex justify-end">
-          <UButton
-            type="button"
-            color="neutral"
-            variant="soft"
-            icon="i-lucide-sparkles"
-            :loading="isGeneratingExampleData"
-            @click="generateExampleData"
-          >
-            Create example data (7 days)
-          </UButton>
         </div>
       </div>
     </UCard>
@@ -1700,77 +2452,835 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
     </UCard>
 
     <UModal
-      v-model:open="isAiSetupModalOpen"
-      title="Setup AI integration"
-      :description="aiSetupStep === 'pin'
-        ? 'Set a 4-digit encryption password. It will be used to encrypt your API key before storing it in this browser.'
-        : 'Choose a provider and API key. The key will be tested before being encrypted and saved.'"
+      v-model:open="isSyncBootstrapModalOpen"
+      title="Set up encrypted sync"
+      description="Create the first encrypted sync vault on this device. The server will only store ciphertext."
     >
       <template #body>
         <div class="space-y-4">
-          <div
-            v-if="aiSetupStep === 'pin'"
-            class="space-y-4"
-          >
-            <div class="rounded-lg border border-default bg-muted/15 px-4 py-3 text-sm text-muted">
-              Your encryption password is local to this browser and is required to unlock the AI integration later.
+          <div class="rounded-lg border border-default bg-muted/15 px-4 py-3 text-sm text-muted">
+            Your sync passphrase never leaves this browser as plaintext. It is used to unwrap the vault key locally on every device you connect later.
+          </div>
+
+          <div class="space-y-2">
+            <label
+              for="sync-bootstrap-device-name"
+              class="block text-sm font-medium text-highlighted"
+            >
+              Device name
+            </label>
+            <UInput
+              id="sync-bootstrap-device-name"
+              v-model="syncBootstrapDeviceName"
+              autocomplete="organization-title"
+              placeholder="e.g. MacBook browser"
+            />
+          </div>
+
+          <div class="grid gap-4 sm:grid-cols-2">
+            <div class="space-y-2">
+              <label
+                for="sync-bootstrap-passphrase"
+                class="block text-sm font-medium text-highlighted"
+              >
+                Sync passphrase
+              </label>
+              <UInput
+                id="sync-bootstrap-passphrase"
+                v-model="syncBootstrapPassphrase"
+                type="password"
+                autocomplete="new-password"
+                placeholder="At least 8 characters"
+              />
             </div>
 
             <div class="space-y-2">
               <label
-                for="ai-setup-pin"
+                for="sync-bootstrap-passphrase-confirm"
                 class="block text-sm font-medium text-highlighted"
               >
-                Encryption password (4 digits)
+                Confirm passphrase
               </label>
               <UInput
-                id="ai-setup-pin"
-                v-model="aiSetupPin"
+                id="sync-bootstrap-passphrase-confirm"
+                v-model="syncBootstrapPassphraseConfirm"
                 type="password"
-                inputmode="numeric"
-                autocomplete="off"
-                maxlength="4"
-                placeholder="1234"
+                autocomplete="new-password"
+                placeholder="Repeat passphrase"
               />
             </div>
           </div>
 
-          <div
-            v-else
-            class="space-y-4"
+          <div class="rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning">
+            Anyone with the recovery key can access this vault. Export it immediately after setup and keep it somewhere private.
+          </div>
+
+          <p
+            v-if="syncBootstrapError"
+            class="text-sm text-error"
           >
-            <div class="grid gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
-              <div class="space-y-2">
-                <label
-                  for="ai-setup-provider"
-                  class="block text-sm font-medium text-highlighted"
-                >
-                  Provider
-                </label>
-                <USelect
-                  id="ai-setup-provider"
-                  v-model="aiSetupProvider"
-                  :items="AI_PROVIDER_OPTIONS"
-                  class="w-full"
-                />
+            {{ syncBootstrapError }}
+          </p>
+        </div>
+      </template>
+
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton
+            type="button"
+            color="neutral"
+            variant="soft"
+            :disabled="isSyncBootstrapPending"
+            @click="closeSyncBootstrapModal"
+          >
+            Cancel
+          </UButton>
+
+          <UButton
+            type="button"
+            icon="i-lucide-lock-keyhole"
+            :loading="isSyncBootstrapPending"
+            @click="submitSyncBootstrap"
+          >
+            Create encrypted vault
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="isSyncRecoveryModalOpen"
+      title="Export recovery key"
+      description="Save this somewhere private. It contains the vault token and passphrase needed to recover your encrypted sync vault."
+    >
+      <template #body>
+        <div class="space-y-4">
+          <div class="rounded-lg border border-error/40 bg-error/10 px-4 py-3 text-sm text-error">
+            Treat this like a password file. Anyone with this recovery key can restore the vault and decrypt its synced data.
+          </div>
+
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div class="space-y-1">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Vault ID
+              </p>
+              <code class="block break-all rounded-md border border-default bg-muted/20 px-2 py-1 text-sm text-highlighted">
+                {{ syncVaultCredentials?.vaultId ?? 'Not ready' }}
+              </code>
+            </div>
+
+            <div class="space-y-1">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Transport
+              </p>
+              <p class="text-sm text-highlighted">
+                {{ syncTransportModeLabel }}
+              </p>
+            </div>
+          </div>
+
+          <div class="space-y-2">
+            <label
+              for="sync-recovery-payload"
+              class="block text-sm font-medium text-highlighted"
+            >
+              Recovery key JSON
+            </label>
+            <UTextarea
+              id="sync-recovery-payload"
+              v-model="syncRecoveryPayload"
+              :rows="12"
+              readonly
+              spellcheck="false"
+              class="w-full font-mono text-xs"
+            />
+          </div>
+
+          <p
+            v-if="syncRecoveryError"
+            class="text-sm text-error"
+          >
+            {{ syncRecoveryError }}
+          </p>
+
+          <p
+            v-else-if="syncRecoveryNotice"
+            class="text-sm text-success"
+          >
+            {{ syncRecoveryNotice }}
+          </p>
+        </div>
+      </template>
+
+      <template #footer>
+        <div class="flex w-full flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <UButton
+            type="button"
+            color="neutral"
+            variant="soft"
+            @click="closeSyncRecoveryModal"
+          >
+            Close
+          </UButton>
+
+          <UButton
+            type="button"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-download"
+            @click="downloadSyncRecoveryPayload"
+          >
+            Download JSON
+          </UButton>
+
+          <UButton
+            type="button"
+            icon="i-lucide-copy"
+            @click="copySyncRecoveryPayload"
+          >
+            Copy recovery key
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="isSyncDetailsModalOpen"
+      title="Technical sync details"
+      description="Technical sync state for this browser, including identifiers, linked devices, and local conflict history."
+    >
+      <template #body>
+        <div class="space-y-5">
+          <div class="grid gap-4 sm:grid-cols-2">
+            <div class="space-y-1">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Device ID
+              </p>
+              <code class="block break-all rounded-md border border-default bg-muted/20 px-2 py-1 text-sm text-highlighted">
+                {{ localSync.deviceId ?? 'Not set' }}
+              </code>
+            </div>
+
+            <div class="space-y-1">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Vault ID
+              </p>
+              <code class="block break-all rounded-md border border-default bg-muted/20 px-2 py-1 text-sm text-highlighted">
+                {{ localSync.vaultId ?? 'Not set' }}
+              </code>
+            </div>
+          </div>
+
+          <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div class="space-y-1">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Transport
+              </p>
+              <p class="text-sm text-highlighted">
+                {{ syncTransportModeLabel }}
+              </p>
+            </div>
+
+            <div class="space-y-1">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Engine state
+              </p>
+              <p class="text-sm text-highlighted">
+                {{ statusBadgeLabel(localSync.status) }}
+              </p>
+            </div>
+
+            <div class="space-y-1">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Trigger
+              </p>
+              <p class="text-sm text-highlighted">
+                {{ localSync.lastTriggerReason ?? 'None yet' }}
+              </p>
+            </div>
+
+            <div class="space-y-1">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Last attempt
+              </p>
+              <p class="text-sm text-highlighted">
+                {{ formatLocalSyncDateTime(localSync.lastSyncAttemptAt) }}
+              </p>
+            </div>
+
+            <div class="space-y-1">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Last success
+              </p>
+              <p class="text-sm text-highlighted">
+                {{ formatLocalSyncDateTime(localSync.lastSyncSuccessAt) }}
+              </p>
+            </div>
+
+            <div class="space-y-1">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Next retry
+              </p>
+              <p class="text-sm text-highlighted">
+                {{ localSync.nextRetryAt ? formatLocalSyncDateTime(localSync.nextRetryAt) : 'Not scheduled' }}
+              </p>
+            </div>
+
+            <div class="space-y-1">
+              <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                Error class
+              </p>
+              <p class="text-sm text-highlighted">
+                {{ formatLocalSyncErrorCode(localSync.lastErrorCode) }}
+              </p>
+            </div>
+          </div>
+
+          <div
+            v-if="syncStatusActionError || localSync.lastError"
+            class="rounded-lg border border-error/40 bg-error/10 px-4 py-3 text-sm text-error"
+          >
+            {{ syncStatusActionError || localSync.lastError }}
+          </div>
+
+          <div class="rounded-xl border border-default bg-muted/10 px-4 py-4">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h3 class="text-sm font-semibold text-highlighted">
+                  Synced devices
+                </h3>
+                <p class="text-xs text-muted">
+                  Devices currently registered in this vault.
+                </p>
               </div>
 
-              <div class="space-y-2">
-                <label
-                  for="ai-setup-api-key"
-                  class="block text-sm font-medium text-highlighted"
-                >
-                  {{ providerLabel(aiSetupProvider) }} API key
-                </label>
-                <UInput
-                  id="ai-setup-api-key"
-                  v-model="aiSetupApiKey"
-                  type="password"
-                  autocomplete="off"
-                  :placeholder="aiSetupProvider === 'openai' ? 'sk-...' : 'sk-ant-...'"
-                />
+              <UButton
+                type="button"
+                color="neutral"
+                variant="soft"
+                size="sm"
+                icon="i-lucide-refresh-cw"
+                :loading="isSyncDevicesLoading"
+                :disabled="!canManageRemoteSyncVault"
+                @click="refreshSyncDeviceList(syncVaultCredentials)"
+              >
+                Refresh
+              </UButton>
+            </div>
+
+            <p
+              v-if="syncDevicesError"
+              class="mt-3 text-sm text-error"
+            >
+              {{ syncDevicesError }}
+            </p>
+
+            <div
+              v-else-if="isSyncDevicesLoading"
+              class="mt-3 text-sm text-muted"
+            >
+              Loading devices...
+            </div>
+
+            <div
+              v-else-if="!syncDevices.length"
+              class="mt-3 text-sm text-muted"
+            >
+              {{ canManageRemoteSyncVault ? 'No synced devices reported yet.' : 'Connect to a sync vault to load the device list.' }}
+            </div>
+
+            <div
+              v-else
+              class="mt-3 space-y-2"
+            >
+              <div
+                v-for="device in syncDevices"
+                :key="device.deviceId"
+                class="rounded-lg border border-default bg-default px-3 py-3"
+              >
+                <div class="space-y-2">
+                  <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p class="text-sm font-medium text-highlighted">
+                        {{ device.deviceName }}
+                      </p>
+                      <p class="text-xs text-muted">
+                        Last seen {{ formatLocalSyncDateTime(device.lastSeenAt) }}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div class="space-y-1">
+                    <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                      Device ID
+                    </p>
+                    <code class="block break-all rounded-md border border-default bg-muted/20 px-2 py-1 text-xs text-highlighted">
+                      {{ device.deviceId }}
+                    </code>
+                  </div>
+                </div>
               </div>
             </div>
+          </div>
+
+          <div class="rounded-xl border border-default bg-muted/10 px-4 py-4">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div class="flex items-center gap-2">
+                  <h3 class="text-sm font-semibold text-highlighted">
+                    Local conflict log
+                  </h3>
+                  <UBadge
+                    color="neutral"
+                    variant="soft"
+                  >
+                    {{ syncConflictEntries.length }}
+                  </UBadge>
+                </div>
+                <p class="text-xs text-muted">
+                  Remote wins and payload decode failures logged on this device.
+                </p>
+              </div>
+
+              <UButton
+                type="button"
+                color="neutral"
+                variant="soft"
+                size="sm"
+                icon="i-lucide-refresh-cw"
+                :loading="isSyncConflictsLoading"
+                @click="refreshSyncConflictEntries"
+              >
+                Refresh
+              </UButton>
+            </div>
+
+            <p
+              v-if="syncConflictsError"
+              class="mt-3 text-sm text-error"
+            >
+              {{ syncConflictsError }}
+            </p>
+
+            <div
+              v-else-if="isSyncConflictsLoading"
+              class="mt-3 text-sm text-muted"
+            >
+              Loading conflict log...
+            </div>
+
+            <div
+              v-else-if="!syncConflictEntries.length"
+              class="mt-3 text-sm text-muted"
+            >
+              No sync conflicts logged on this device yet.
+            </div>
+
+            <div
+              v-else
+              class="mt-3 space-y-2"
+            >
+              <div
+                v-for="entry in syncConflictEntries"
+                :key="entry.id"
+                class="rounded-lg border border-default bg-default px-3 py-3"
+              >
+                <div class="space-y-2">
+                  <div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p class="text-sm font-medium text-highlighted">
+                        {{ entry.collectionName }}
+                      </p>
+                      <p class="text-xs text-muted">
+                        {{ entry.reason }}
+                      </p>
+                    </div>
+
+                    <p class="text-xs text-muted">
+                      {{ formatLocalSyncDateTime(entry.createdAt) }}
+                    </p>
+                  </div>
+
+                  <div class="space-y-1">
+                    <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                      Document ID
+                    </p>
+                    <code class="block break-all rounded-md border border-default bg-muted/20 px-2 py-1 text-xs text-highlighted">
+                      {{ entry.documentId }}
+                    </code>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton
+            type="button"
+            color="neutral"
+            variant="soft"
+            @click="isSyncDetailsModalOpen = false"
+          >
+            Close
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="isSyncDeleteCloudModalOpen"
+      title="Delete cloud sync copy"
+      description="This permanently removes the server-side vault, encrypted documents, and registered devices. Local data in this browser will be kept."
+    >
+      <template #body>
+        <div class="space-y-4">
+          <div class="rounded-lg border border-error/40 bg-error/10 px-4 py-3 text-sm text-error">
+            This cannot be undone. After deletion, every connected device will lose access to the cloud copy until a new vault is created.
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-xs font-medium uppercase tracking-wide text-muted">
+              Confirm vault ID
+            </p>
+            <code class="block break-all rounded-md border border-default bg-muted/20 px-2 py-1 text-sm text-highlighted">
+              {{ syncVaultCredentials?.vaultId ?? 'Not ready' }}
+            </code>
+          </div>
+
+          <div class="space-y-2">
+            <label
+              for="sync-delete-cloud-confirm"
+              class="block text-sm font-medium text-highlighted"
+            >
+              Type the vault ID to confirm
+            </label>
+            <UInput
+              id="sync-delete-cloud-confirm"
+              v-model="syncDeleteCloudConfirmValue"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Paste the full vault ID"
+            />
+          </div>
+
+          <p
+            v-if="syncDeleteCloudError"
+            class="text-sm text-error"
+          >
+            {{ syncDeleteCloudError }}
+          </p>
+        </div>
+      </template>
+
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton
+            type="button"
+            color="neutral"
+            variant="soft"
+            :disabled="isSyncDeleteCloudPending"
+            @click="closeSyncDeleteCloudModal"
+          >
+            Cancel
+          </UButton>
+
+          <UButton
+            type="button"
+            color="error"
+            icon="i-lucide-cloud-off"
+            :loading="isSyncDeleteCloudPending"
+            :disabled="!syncDeleteCloudConfirmationMatches"
+            @click="confirmDeleteCloudSyncCopy"
+          >
+            Delete cloud copy
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="isSyncConnectModalOpen"
+      title="Connect to existing device"
+      :description="syncConnectModalDescription"
+    >
+      <template #body>
+        <div class="space-y-4">
+          <template v-if="isSyncConnectAwaitingPassphrase">
+            <div class="rounded-lg border border-success/40 bg-success/10 px-4 py-3 text-sm text-success">
+              This device was approved. Enter the sync passphrase to finish linking.
+            </div>
+
+            <div class="space-y-2">
+              <label
+                for="sync-connect-passphrase"
+                class="block text-sm font-medium text-highlighted"
+              >
+                Sync passphrase
+              </label>
+              <UInput
+                id="sync-connect-passphrase"
+                v-model="syncConnectPassphrase"
+                type="password"
+                autocomplete="current-password"
+                placeholder="Enter the same passphrase used when the vault was created"
+              />
+              <p class="text-xs text-muted">
+                The passphrase never leaves this browser. It is used locally to unwrap the encrypted vault key and start sync on this device.
+              </p>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="rounded-lg border border-default bg-muted/15 px-4 py-3 text-sm text-muted">
+              Do not enable sync first on this device. Keep this modal open, approve the code from an already synced device, then enter the same sync passphrase here.
+            </div>
+
+            <div
+              v-if="syncConnectQrHostWarning && isSyncConnectQrExpanded"
+              class="rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning"
+            >
+              {{ syncConnectQrHostWarning }}
+            </div>
+
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div class="space-y-1">
+                <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                  This device
+                </p>
+                <p class="text-sm text-highlighted">
+                  {{ syncPairingRequest?.requesterDeviceName ?? 'Preparing request' }}
+                </p>
+              </div>
+
+              <div class="space-y-1">
+                <p class="text-xs font-medium uppercase tracking-wide text-muted">
+                  Code expires
+                </p>
+                <p class="text-sm text-highlighted">
+                  {{ formatLocalSyncDateTime(syncPairingRequest?.expiresAt ?? null) }}
+                </p>
+              </div>
+            </div>
+
+            <div class="rounded-xl border border-default bg-muted/10 px-4 py-5 text-center">
+              <p class="text-xs font-medium uppercase tracking-[0.24em] text-muted">
+                Pairing code
+              </p>
+              <p class="mt-2 font-mono text-4xl font-semibold tracking-[0.4em] text-highlighted sm:text-5xl">
+                {{ formatSyncPairingCode(syncPairingRequest?.pairingCode) }}
+              </p>
+              <p class="mt-3 text-sm text-muted">
+                Codes are case-sensitive.
+              </p>
+            </div>
+
+            <div class="flex justify-center">
+              <UButton
+                type="button"
+                color="neutral"
+                variant="soft"
+                icon="i-lucide-qr-code"
+                :loading="isGeneratingSyncConnectQr"
+                @click="toggleSyncConnectQr"
+              >
+                {{ isSyncConnectQrExpanded ? 'Hide QR code' : 'Show QR code' }}
+              </UButton>
+            </div>
+
+            <div
+              v-if="isSyncConnectQrExpanded"
+              class="rounded-xl border border-default bg-muted/10 px-4 py-5"
+            >
+              <div class="flex justify-center">
+                <div class="rounded-[28px] border border-default bg-white p-3 shadow-sm">
+                  <img
+                    v-if="syncConnectQrDataUrl"
+                    :src="syncConnectQrDataUrl"
+                    alt="QR code for authorizing this device"
+                    class="size-52 rounded-[20px]"
+                  >
+                </div>
+              </div>
+
+              <p class="mt-4 text-center text-sm text-muted">
+                Scan this on the already synced device to open the authorize dialog with the code prefilled.
+              </p>
+            </div>
+
+            <div class="rounded-lg border border-default bg-muted/15 px-4 py-3 text-sm">
+              <p class="font-medium text-highlighted">
+                Status: {{ syncPairingStatus === 'expired' ? 'Expired' : syncPairingStatus === 'approved' ? 'Approved' : 'Waiting for authorization' }}
+              </p>
+              <p class="mt-1 text-muted">
+                Enter this code on the already synced device under “Authorize new device”.
+              </p>
+            </div>
+          </template>
+
+          <p
+            v-if="syncConnectError"
+            class="text-sm text-error"
+          >
+            {{ syncConnectError }}
+          </p>
+        </div>
+      </template>
+
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton
+            type="button"
+            color="neutral"
+            variant="soft"
+            @click="closeSyncConnectModal"
+          >
+            Close
+          </UButton>
+
+          <UButton
+            v-if="syncPairingStatus === 'expired'"
+            type="button"
+            icon="i-lucide-refresh-cw"
+            :loading="isCreatingSyncPairingRequest"
+            @click="openSyncConnectModal"
+          >
+            Generate new code
+          </UButton>
+
+          <UButton
+            v-if="syncPairingStatus === 'approved' && syncPairingApprovedCredentials"
+            type="button"
+            icon="i-lucide-link"
+            :loading="isCompletingSyncPairingConnect"
+            @click="completeSyncConnectPairing"
+          >
+            Finish linking
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="isSyncAuthorizeModalOpen"
+      title="Authorize new device"
+      description="Enter the 6-character code shown on the device that needs access to this sync vault."
+    >
+      <template #body>
+        <div class="space-y-4">
+          <div class="rounded-lg border border-default bg-muted/15 px-4 py-3 text-sm text-muted">
+            This grants the requesting device access to this encrypted vault while it keeps its own device ID. The user will still need the sync passphrase on that device to finish linking.
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-xs font-medium uppercase tracking-wide text-muted">
+              Current vault
+            </p>
+            <code class="block break-all rounded-md border border-default bg-muted/20 px-2 py-1 text-sm text-highlighted">
+              {{ syncVaultCredentials?.vaultId ?? 'Not ready' }}
+            </code>
+          </div>
+
+          <div class="space-y-2">
+            <label
+              for="sync-pairing-code"
+              class="block text-sm font-medium text-highlighted"
+            >
+              Pairing code
+            </label>
+            <UInput
+              id="sync-pairing-code"
+              v-model="syncAuthorizeCode"
+              size="lg"
+              maxlength="6"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="Ab3X9q"
+              class="font-mono"
+            />
+            <p class="text-xs text-muted">
+              Enter the code exactly as shown. Codes are case-sensitive.
+            </p>
+          </div>
+
+          <p
+            v-if="syncAuthorizeError"
+            class="text-sm text-error"
+          >
+            {{ syncAuthorizeError }}
+          </p>
+        </div>
+      </template>
+
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton
+            type="button"
+            color="neutral"
+            variant="soft"
+            :disabled="isAuthorizingSyncPairing"
+            @click="closeSyncAuthorizeModal"
+          >
+            Cancel
+          </UButton>
+
+          <UButton
+            type="button"
+            icon="i-lucide-shield-check"
+            :loading="isAuthorizingSyncPairing"
+            @click="authorizeSyncPairingCode"
+          >
+            Authorize device
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="isAiSetupModalOpen"
+      title="Setup AI integration"
+      description="Choose a provider and API key. The key will be tested before being saved."
+    >
+      <template #body>
+        <div class="space-y-4">
+          <div class="grid gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
+            <div class="space-y-2">
+              <label
+                for="ai-setup-provider"
+                class="block text-sm font-medium text-highlighted"
+              >
+                Provider
+              </label>
+              <USelect
+                id="ai-setup-provider"
+                v-model="aiSetupProvider"
+                :items="AI_PROVIDER_OPTIONS"
+                class="w-full"
+              />
+            </div>
+
+            <div class="space-y-2">
+              <label
+                for="ai-setup-api-key"
+                class="block text-sm font-medium text-highlighted"
+              >
+                {{ providerLabel(aiSetupProvider) }} API key
+              </label>
+              <UInput
+                id="ai-setup-api-key"
+                v-model="aiSetupApiKey"
+                type="password"
+                autocomplete="off"
+                :placeholder="aiSetupProvider === 'openai' ? 'sk-...' : 'sk-ant-...'"
+              />
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-default bg-muted/15 px-4 py-3 text-sm text-muted">
+            The key is saved directly in this browser for immediate use. If sync is enabled, the cloud copy is protected by your encrypted sync vault.
           </div>
 
           <p
@@ -1795,27 +3305,6 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
           </UButton>
 
           <UButton
-            v-if="aiSetupStep === 'provider'"
-            type="button"
-            color="neutral"
-            variant="ghost"
-            :disabled="isSavingAiIntegration || isTestingAiIntegrationKey"
-            @click="aiSetupStep = 'pin'"
-          >
-            Back
-          </UButton>
-
-          <UButton
-            v-if="aiSetupStep === 'pin'"
-            type="button"
-            icon="i-lucide-arrow-right"
-            @click="continueAiSetupToProviderStep"
-          >
-            Continue
-          </UButton>
-
-          <UButton
-            v-else
             type="button"
             icon="i-lucide-shield-check"
             :loading="isSavingAiIntegration || isTestingAiIntegrationKey"
@@ -1829,8 +3318,8 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
 
     <UModal
       v-model:open="isAiUnlockModalOpen"
-      title="Unlock AI integration"
-      description="Enter your 4-digit encryption password to decrypt the provider key for this session."
+      title="Upgrade legacy AI integration"
+      description="This key still uses the old browser-only 4-digit password format. Enter it once to unlock and upgrade the key."
     >
       <template #body>
         <form
@@ -1842,7 +3331,7 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
               for="ai-unlock-pin"
               class="block text-sm font-medium text-highlighted"
             >
-              Encryption password (4 digits)
+              Legacy encryption password (4 digits)
             </label>
             <UInput
               id="ai-unlock-pin"
@@ -1877,7 +3366,7 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
               icon="i-lucide-unlock"
               :loading="isSavingAiIntegration"
             >
-              Unlock
+              Upgrade key
             </UButton>
           </div>
         </form>
@@ -1886,8 +3375,8 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
 
     <UModal
       v-model:open="isAiChangeProviderModalOpen"
-      title="Change provider"
-      description="Enter your current encryption password, then provide a new provider API key. The new key is tested before replacing the current one."
+      title="Change provider/key"
+      description="Provide a new provider API key. The key is tested before replacing the current one."
     >
       <template #body>
         <form
@@ -1895,24 +3384,6 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
           @submit.prevent="submitAiChangeProvider"
         >
           <div class="grid gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
-            <div class="space-y-2">
-              <label
-                for="ai-change-provider-current-pin"
-                class="block text-sm font-medium text-highlighted"
-              >
-                Current encryption password
-              </label>
-              <UInput
-                id="ai-change-provider-current-pin"
-                v-model="aiChangeProviderCurrentPin"
-                type="password"
-                inputmode="numeric"
-                autocomplete="off"
-                maxlength="4"
-                placeholder="1234"
-              />
-            </div>
-
             <div class="space-y-2">
               <label
                 for="ai-change-provider-select"
@@ -1927,22 +3398,22 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
                 class="w-full"
               />
             </div>
-          </div>
 
-          <div class="space-y-2">
-            <label
-              for="ai-change-provider-api-key"
-              class="block text-sm font-medium text-highlighted"
-            >
-              {{ providerLabel(aiChangeProviderProvider) }} API key
-            </label>
-            <UInput
-              id="ai-change-provider-api-key"
-              v-model="aiChangeProviderApiKey"
-              type="password"
-              autocomplete="off"
-              :placeholder="aiChangeProviderProvider === 'openai' ? 'sk-...' : 'sk-ant-...'"
-            />
+            <div class="space-y-2">
+              <label
+                for="ai-change-provider-api-key"
+                class="block text-sm font-medium text-highlighted"
+              >
+                {{ providerLabel(aiChangeProviderProvider) }} API key
+              </label>
+              <UInput
+                id="ai-change-provider-api-key"
+                v-model="aiChangeProviderApiKey"
+                type="password"
+                autocomplete="off"
+                :placeholder="aiChangeProviderProvider === 'openai' ? 'sk-...' : 'sk-ant-...'"
+              />
+            </div>
           </div>
 
           <p
@@ -1968,83 +3439,6 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
               :loading="isSavingAiIntegration || isTestingAiIntegrationKey"
             >
               Test & save
-            </UButton>
-          </div>
-        </form>
-      </template>
-    </UModal>
-
-    <UModal
-      v-model:open="isAiChangePasswordModalOpen"
-      title="Change encryption password"
-      description="Re-encrypt your stored AI key with a new 4-digit encryption password."
-    >
-      <template #body>
-        <form
-          class="space-y-4"
-          @submit.prevent="submitAiChangePassword"
-        >
-          <div class="grid gap-4 md:grid-cols-2">
-            <div class="space-y-2">
-              <label
-                for="ai-change-password-current"
-                class="block text-sm font-medium text-highlighted"
-              >
-                Current password
-              </label>
-              <UInput
-                id="ai-change-password-current"
-                v-model="aiChangePasswordCurrentPin"
-                type="password"
-                inputmode="numeric"
-                autocomplete="off"
-                maxlength="4"
-                placeholder="1234"
-              />
-            </div>
-
-            <div class="space-y-2">
-              <label
-                for="ai-change-password-new"
-                class="block text-sm font-medium text-highlighted"
-              >
-                New password
-              </label>
-              <UInput
-                id="ai-change-password-new"
-                v-model="aiChangePasswordNewPin"
-                type="password"
-                inputmode="numeric"
-                autocomplete="off"
-                maxlength="4"
-                placeholder="5678"
-              />
-            </div>
-          </div>
-
-          <p
-            v-if="aiChangePasswordError"
-            class="text-sm text-error"
-          >
-            {{ aiChangePasswordError }}
-          </p>
-
-          <div class="flex flex-col-reverse items-end gap-2 sm:flex-row sm:justify-end">
-            <UButton
-              type="button"
-              color="neutral"
-              variant="ghost"
-              :disabled="isSavingAiIntegration"
-              @click="closeAiChangePasswordModal"
-            >
-              Cancel
-            </UButton>
-            <UButton
-              type="submit"
-              icon="i-lucide-key-round"
-              :loading="isSavingAiIntegration"
-            >
-              Save password
             </UButton>
           </div>
         </form>

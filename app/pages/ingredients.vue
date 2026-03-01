@@ -11,6 +11,7 @@ import {
 import { DEFAULT_AI_PROVIDER } from '../utils/client-settings'
 import type { AiProvider } from '../utils/client-settings'
 import { MACRO_COLORS } from '../utils/nutrition-colors'
+import { useLocalSyncState } from '../utils/sync/local-sync'
 
 type IngredientEntry = IngredientRecord
 
@@ -59,6 +60,7 @@ const aiUnlockError = ref('')
 const isUnlockingAiIntegration = ref(false)
 const aiNutritionImageDataUrl = ref('')
 const aiNutritionImageFileName = ref('')
+const localSync = useLocalSyncState()
 const ingredientEditorForm = reactive<IngredientFormState>({
   name: '',
   portionSize: '',
@@ -83,14 +85,14 @@ const selectedAiProviderLabel = computed(() => {
 
 const aiAvailabilityModalTitle = computed(() => {
   return aiAvailabilityMode.value === 'locked'
-    ? 'Unlock AI integration'
+    ? 'Upgrade legacy AI integration'
     : 'AI integration required'
 })
 
 const aiAvailabilityModalDescription = computed(() => {
   return aiAvailabilityMode.value === 'locked'
-    ? `Your ${selectedAiProviderLabel.value} key is configured but locked. Unlock it to use AI ingredient import.`
-    : 'Set up an encrypted AI provider key in Settings before using AI ingredient import.'
+    ? `Your ${selectedAiProviderLabel.value} key still uses the old local password format. Unlock it once to upgrade it before using AI ingredient import.`
+    : 'Set up an AI provider key in Settings before using AI ingredient import.'
 })
 
 const ingredientExportPayload = computed(() => {
@@ -151,6 +153,17 @@ watch(isAiUnlockModalOpen, (isOpen) => {
     resetAiUnlockModal()
   }
 })
+
+watch(
+  () => localSync.lastSyncSuccessAt,
+  (lastSyncSuccessAt, previousLastSyncSuccessAt) => {
+    if (!lastSyncSuccessAt || lastSyncSuccessAt === previousLastSyncSuccessAt) {
+      return
+    }
+
+    void refreshAiIntegrationAvailability()
+  }
+)
 
 async function persistIngredientsToDb(value: IngredientEntry[]) {
   try {
@@ -320,7 +333,7 @@ async function submitAiUnlock() {
   const pin = aiUnlockPin.value.trim()
 
   if (!pin) {
-    aiUnlockError.value = 'Enter your 4-digit encryption password.'
+    aiUnlockError.value = 'Enter your old 4-digit encryption password.'
     return
   }
 
@@ -1023,8 +1036,8 @@ function readFileAsDataUrl(file: File) {
 
     <UModal
       v-model:open="isAiUnlockModalOpen"
-      title="Unlock AI integration"
-      :description="`Enter your 4-digit encryption password to unlock your ${selectedAiProviderLabel} key for this session.`"
+      title="Upgrade legacy AI integration"
+      :description="`Enter your old 4-digit encryption password once to unlock and upgrade your ${selectedAiProviderLabel} key.`"
     >
       <template #body>
         <form
@@ -1036,7 +1049,7 @@ function readFileAsDataUrl(file: File) {
               for="ingredients-ai-unlock-pin"
               class="block text-sm font-medium text-highlighted"
             >
-              Encryption password (4 digits)
+              Legacy encryption password (4 digits)
             </label>
             <UInput
               id="ingredients-ai-unlock-pin"
@@ -1072,7 +1085,7 @@ function readFileAsDataUrl(file: File) {
               icon="i-lucide-unlock"
               :loading="isUnlockingAiIntegration"
             >
-              Unlock and continue
+              Upgrade and continue
             </UButton>
           </div>
         </form>
@@ -1087,9 +1100,15 @@ function readFileAsDataUrl(file: File) {
       <template #body>
         <div class="space-y-4">
           <p class="text-sm text-muted">
-            Go to <span class="font-medium text-highlighted">Settings → AI Integration</span> and run
-            <span class="font-medium text-highlighted">Setup AI integration</span> to save and encrypt a
-            <span class="font-medium text-highlighted">{{ selectedAiProviderLabel }}</span> API key.
+            <template v-if="aiAvailabilityMode === 'missing'">
+              Go to <span class="font-medium text-highlighted">Settings → AI Integration</span> and run
+              <span class="font-medium text-highlighted">Setup AI integration</span> to save a
+              <span class="font-medium text-highlighted">{{ selectedAiProviderLabel }}</span> API key.
+            </template>
+            <template v-else>
+              Go to <span class="font-medium text-highlighted">Settings → AI Integration</span> and upgrade your
+              <span class="font-medium text-highlighted">{{ selectedAiProviderLabel }}</span> key with the old local password.
+            </template>
           </p>
 
           <div class="flex flex-col-reverse items-end gap-2 sm:flex-row sm:justify-end">

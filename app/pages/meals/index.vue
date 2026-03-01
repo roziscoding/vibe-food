@@ -12,6 +12,7 @@ import { readMeals, writeMeals } from '../../utils/db/repos/meals'
 import type { MealIngredientSnapshotRecord, MealRecord } from '../../utils/db/repos/meals'
 import { writeMealImportEditorDraft } from '../../utils/meal-import-editor-draft'
 import { MACRO_COLORS } from '../../utils/nutrition-colors'
+import { useLocalSyncState } from '../../utils/sync/local-sync'
 import {
   DEFAULT_AI_PROVIDER,
   DEFAULT_CARBS_GOAL,
@@ -72,6 +73,7 @@ const aiUnlockPin = ref('')
 const aiUnlockError = ref('')
 const isUnlockingAiIntegration = ref(false)
 const isConsumingComposeQuery = ref(false)
+const localSync = useLocalSyncState()
 const form = reactive<MealFormState>({
   name: '',
   calories: '',
@@ -132,14 +134,14 @@ const selectedAiProviderLabel = computed(() => {
 
 const aiAvailabilityModalTitle = computed(() => {
   return aiAvailabilityMode.value === 'locked'
-    ? 'Unlock AI integration'
+    ? 'Upgrade legacy AI integration'
     : 'AI integration required'
 })
 
 const aiAvailabilityModalDescription = computed(() => {
   return aiAvailabilityMode.value === 'locked'
-    ? `Your ${selectedAiProviderLabel.value} key is configured but locked. Unlock it in Settings before using AI import.`
-    : 'Set up an encrypted AI provider key in Settings before using AI import.'
+    ? `Your ${selectedAiProviderLabel.value} key still uses the old local password format. Unlock it once to upgrade it before using AI import.`
+    : 'Set up an AI provider key in Settings before using AI import.'
 })
 
 const composedTotals = computed(() => {
@@ -232,6 +234,17 @@ watch(isMealDataReady, (ready) => {
 
   void consumeComposeQueryFromRoute()
 })
+
+watch(
+  () => localSync.lastSyncSuccessAt,
+  (lastSyncSuccessAt, previousLastSyncSuccessAt) => {
+    if (!lastSyncSuccessAt || lastSyncSuccessAt === previousLastSyncSuccessAt) {
+      return
+    }
+
+    void refreshAiIntegrationAvailability()
+  }
+)
 
 async function persistMealsToDb(value: MealEntry[]) {
   try {
@@ -521,7 +534,7 @@ async function submitAiUnlock() {
   const pin = aiUnlockPin.value.trim()
 
   if (pin.length === 0) {
-    aiUnlockError.value = 'Enter your 4-digit encryption password.'
+    aiUnlockError.value = 'Enter your old 4-digit encryption password.'
     return
   }
 
@@ -1389,8 +1402,8 @@ function providerLabel(provider: AiProvider) {
 
     <UModal
       v-model:open="isAiUnlockModalOpen"
-      title="Unlock AI integration"
-      :description="`Enter your 4-digit encryption password to unlock your ${selectedAiProviderLabel} key for this session.`"
+      title="Upgrade legacy AI integration"
+      :description="`Enter your old 4-digit encryption password once to unlock and upgrade your ${selectedAiProviderLabel} key.`"
     >
       <template #body>
         <form
@@ -1402,7 +1415,7 @@ function providerLabel(provider: AiProvider) {
               for="meals-ai-unlock-pin"
               class="block text-sm font-medium text-highlighted"
             >
-              Encryption password (4 digits)
+              Legacy encryption password (4 digits)
             </label>
             <UInput
               id="meals-ai-unlock-pin"
@@ -1438,7 +1451,7 @@ function providerLabel(provider: AiProvider) {
               icon="i-lucide-unlock"
               :loading="isUnlockingAiIntegration"
             >
-              Unlock and continue
+              Upgrade and continue
             </UButton>
           </div>
         </form>
@@ -1455,12 +1468,12 @@ function providerLabel(provider: AiProvider) {
           <p class="text-sm text-muted">
             <template v-if="aiAvailabilityMode === 'missing'">
               Go to <span class="font-medium text-highlighted">Settings → AI Integration</span> and run
-              <span class="font-medium text-highlighted">Setup AI integration</span> to save and encrypt a
+              <span class="font-medium text-highlighted">Setup AI integration</span> to save a
               <span class="font-medium text-highlighted">{{ selectedAiProviderLabel }}</span> API key.
             </template>
             <template v-else>
-              Go to <span class="font-medium text-highlighted">Settings → AI Integration</span> and unlock your
-              <span class="font-medium text-highlighted">{{ selectedAiProviderLabel }}</span> key with your encryption password.
+              Go to <span class="font-medium text-highlighted">Settings → AI Integration</span> and upgrade your
+              <span class="font-medium text-highlighted">{{ selectedAiProviderLabel }}</span> key with the old local password.
             </template>
           </p>
 

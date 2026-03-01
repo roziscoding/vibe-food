@@ -1,7 +1,7 @@
 import { readClientValue, writeClientValue } from './client-db'
 import type { AiProvider } from './client-settings'
 
-type StoredAiIntegrationV1 = {
+type LegacyStoredAiIntegrationV1 = {
   version: 1
   provider: AiProvider
   keyPreview: string
@@ -13,13 +13,23 @@ type StoredAiIntegrationV1 = {
     hash: 'SHA-256'
     iterations: number
   }
+  keyUpdatedAt: string
+}
+
+type StoredAiIntegrationV2 = {
+  version: 2
+  provider: AiProvider
+  apiKey: string
   updatedAt: string
 }
+
+type StoredAiIntegrationRecord = LegacyStoredAiIntegrationV1 | StoredAiIntegrationV2
 
 export type AiIntegrationMetadata = {
   provider: AiProvider
   keyPreview: string
   updatedAt: string
+  storageMode: 'plain' | 'legacy-encrypted'
 }
 
 export type UnlockedAiIntegration = {
@@ -30,38 +40,25 @@ export type UnlockedAiIntegration = {
 type SetupAiIntegrationInput = {
   provider: AiProvider
   apiKey: string
-  pin: string
-}
-
-type ChangeAiIntegrationPasswordInput = {
-  currentPin: string
-  newPin: string
 }
 
 type ReplaceAiIntegrationInput = {
   provider: AiProvider
   apiKey: string
-  currentPin: string
 }
 
 const AI_INTEGRATION_KEY = 'ai-integration'
-const KDF_ITERATIONS = 200_000
+const LEGACY_KDF_ITERATIONS_FALLBACK = 200_000
 const PIN_PATTERN = /^\d{4}$/
 
 let unlockedAiIntegration: UnlockedAiIntegration | null = null
+let unlockedAiIntegrationUpdatedAt: string | null = null
 
 export async function readAiIntegrationMetadata(): Promise<AiIntegrationMetadata | null> {
   const stored = await readStoredAiIntegration()
+  syncUnlockedAiIntegrationWithStoredRecord(stored)
 
-  if (!stored) {
-    return null
-  }
-
-  return {
-    provider: stored.provider,
-    keyPreview: stored.keyPreview,
-    updatedAt: stored.updatedAt
-  }
+  return stored ? toAiIntegrationMetadata(stored) : null
 }
 
 export function getUnlockedAiIntegration(): UnlockedAiIntegration | null {
@@ -74,217 +71,208 @@ export function isAiIntegrationUnlocked() {
 
 export function lockAiIntegration() {
   unlockedAiIntegration = null
+  unlockedAiIntegrationUpdatedAt = null
 }
 
 export async function setupAiIntegration(input: SetupAiIntegrationInput): Promise<AiIntegrationMetadata> {
-  assertValidPin(input.pin)
   assertValidApiKey(input.apiKey)
 
-  const stored = await encryptApiKey({
+  const stored = createPlainStoredAiIntegration({
     provider: input.provider,
-    apiKey: input.apiKey.trim(),
-    pin: input.pin
+    apiKey: input.apiKey.trim()
   })
 
   await writeClientValue(AI_INTEGRATION_KEY, stored)
-  unlockedAiIntegration = {
-    provider: input.provider,
-    apiKey: input.apiKey.trim()
-  }
+  syncUnlockedAiIntegrationWithStoredRecord(stored)
 
-  return {
-    provider: stored.provider,
-    keyPreview: stored.keyPreview,
-    updatedAt: stored.updatedAt
-  }
+  return toAiIntegrationMetadata(stored)
 }
 
 export async function unlockAiIntegration(pin: string): Promise<AiIntegrationMetadata> {
-  assertValidPin(pin)
-
   const stored = await readStoredAiIntegration()
 
   if (!stored) {
     throw new Error('No AI integration is configured yet.')
   }
 
-  const apiKey = await decryptApiKey(stored, pin)
+  if (stored.version === 2) {
+    syncUnlockedAiIntegrationWithStoredRecord(stored)
+    return toAiIntegrationMetadata(stored)
+  }
 
-  unlockedAiIntegration = {
+  assertValidPin(pin)
+  const apiKey = await decryptLegacyApiKey(stored, pin)
+  const migrated = createPlainStoredAiIntegration({
     provider: stored.provider,
     apiKey
-  }
+  })
 
-  return {
-    provider: stored.provider,
-    keyPreview: stored.keyPreview,
-    updatedAt: stored.updatedAt
-  }
+  await writeClientValue(AI_INTEGRATION_KEY, migrated)
+  syncUnlockedAiIntegrationWithStoredRecord(migrated)
+
+  return toAiIntegrationMetadata(migrated)
 }
 
 export async function clearAiIntegration() {
-  unlockedAiIntegration = null
+  lockAiIntegration()
   await writeClientValue<null>(AI_INTEGRATION_KEY, null)
 }
 
-export async function changeAiIntegrationPassword(input: ChangeAiIntegrationPasswordInput): Promise<AiIntegrationMetadata> {
-  assertValidPin(input.currentPin)
-  assertValidPin(input.newPin)
-
-  const stored = await readStoredAiIntegration()
-
-  if (!stored) {
-    throw new Error('No AI integration is configured yet.')
-  }
-
-  const apiKey = await decryptApiKey(stored, input.currentPin)
-  const reencrypted = await encryptApiKey({
-    provider: stored.provider,
-    apiKey,
-    pin: input.newPin
-  })
-
-  await writeClientValue(AI_INTEGRATION_KEY, reencrypted)
-  unlockedAiIntegration = {
-    provider: stored.provider,
-    apiKey
-  }
-
-  return {
-    provider: reencrypted.provider,
-    keyPreview: reencrypted.keyPreview,
-    updatedAt: reencrypted.updatedAt
-  }
-}
-
 export async function replaceAiIntegration(input: ReplaceAiIntegrationInput): Promise<AiIntegrationMetadata> {
-  assertValidPin(input.currentPin)
   assertValidApiKey(input.apiKey)
 
-  const stored = await readStoredAiIntegration()
-
-  if (!stored) {
-    throw new Error('No AI integration is configured yet.')
-  }
-
-  // Verify the current pin against the existing encrypted key before replacing.
-  await decryptApiKey(stored, input.currentPin)
-
-  const nextStored = await encryptApiKey({
-    provider: input.provider,
-    apiKey: input.apiKey.trim(),
-    pin: input.currentPin
-  })
-
-  await writeClientValue(AI_INTEGRATION_KEY, nextStored)
-  unlockedAiIntegration = {
+  const stored = createPlainStoredAiIntegration({
     provider: input.provider,
     apiKey: input.apiKey.trim()
-  }
+  })
 
-  return {
-    provider: nextStored.provider,
-    keyPreview: nextStored.keyPreview,
-    updatedAt: nextStored.updatedAt
-  }
+  await writeClientValue(AI_INTEGRATION_KEY, stored)
+  syncUnlockedAiIntegrationWithStoredRecord(stored)
+
+  return toAiIntegrationMetadata(stored)
 }
 
 export function isValidAiPin(pin: string) {
   return PIN_PATTERN.test(pin.trim())
 }
 
-async function readStoredAiIntegration(): Promise<StoredAiIntegrationV1 | null> {
+async function readStoredAiIntegration(): Promise<StoredAiIntegrationRecord | null> {
   const value = await readClientValue<unknown>(AI_INTEGRATION_KEY)
   return normalizeStoredAiIntegration(value)
 }
 
-function normalizeStoredAiIntegration(value: unknown): StoredAiIntegrationV1 | null {
-  if (!value || typeof value !== 'object') {
+function normalizeStoredAiIntegration(value: unknown): StoredAiIntegrationRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null
   }
 
-  const record = value as Partial<StoredAiIntegrationV1>
+  const record = value as Record<string, unknown>
 
-  if (record.version !== 1) {
+  if (record.version === 2) {
+    return normalizePlainStoredAiIntegration(record)
+  }
+
+  return normalizeLegacyStoredAiIntegration(record)
+}
+
+function normalizePlainStoredAiIntegration(value: Record<string, unknown>): StoredAiIntegrationV2 | null {
+  if (value.provider !== 'openai' && value.provider !== 'anthropic') {
     return null
   }
 
-  if (record.provider !== 'openai' && record.provider !== 'anthropic') {
+  if (typeof value.apiKey !== 'string' || !value.apiKey.trim()) {
     return null
   }
 
-  if (
-    typeof record.keyPreview !== 'string'
-    || typeof record.encryptedApiKey !== 'string'
-    || typeof record.salt !== 'string'
-    || typeof record.iv !== 'string'
-    || typeof record.updatedAt !== 'string'
-  ) {
-    return null
-  }
+  const updatedAt = normalizeUpdatedAt(value.updatedAt)
 
-  if (
-    !record.kdf
-    || record.kdf.name !== 'PBKDF2'
-    || record.kdf.hash !== 'SHA-256'
-    || typeof record.kdf.iterations !== 'number'
-    || !Number.isFinite(record.kdf.iterations)
-    || record.kdf.iterations <= 0
-  ) {
+  if (!updatedAt) {
     return null
   }
 
   return {
-    version: 1,
-    provider: record.provider,
-    keyPreview: record.keyPreview,
-    encryptedApiKey: record.encryptedApiKey,
-    salt: record.salt,
-    iv: record.iv,
-    kdf: {
-      name: 'PBKDF2',
-      hash: 'SHA-256',
-      iterations: Math.round(record.kdf.iterations)
-    },
-    updatedAt: record.updatedAt
+    version: 2,
+    provider: value.provider,
+    apiKey: value.apiKey.trim(),
+    updatedAt
   }
 }
 
-async function encryptApiKey(input: {
-  provider: AiProvider
-  apiKey: string
-  pin: string
-}): Promise<StoredAiIntegrationV1> {
-  const cryptoApi = getCryptoApi()
-  const salt = cryptoApi.getRandomValues(new Uint8Array(16))
-  const iv = cryptoApi.getRandomValues(new Uint8Array(12))
-  const key = await deriveEncryptionKey(input.pin, salt, KDF_ITERATIONS)
-  const plaintext = new TextEncoder().encode(input.apiKey)
-  const ciphertext = await cryptoApi.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    plaintext
+function normalizeLegacyStoredAiIntegration(value: Record<string, unknown>): LegacyStoredAiIntegrationV1 | null {
+  if (value.version !== 1) {
+    return null
+  }
+
+  if (value.provider !== 'openai' && value.provider !== 'anthropic') {
+    return null
+  }
+
+  if (
+    typeof value.keyPreview !== 'string'
+    || typeof value.encryptedApiKey !== 'string'
+    || typeof value.salt !== 'string'
+    || typeof value.iv !== 'string'
+  ) {
+    return null
+  }
+
+  const kdf = normalizeLegacyKdf(value.kdf)
+  const keyUpdatedAt = normalizeUpdatedAt(
+    typeof value.keyUpdatedAt === 'string'
+      ? value.keyUpdatedAt
+      : value.updatedAt
   )
+
+  if (!kdf || !keyUpdatedAt) {
+    return null
+  }
 
   return {
     version: 1,
+    provider: value.provider,
+    keyPreview: value.keyPreview,
+    encryptedApiKey: value.encryptedApiKey,
+    salt: value.salt,
+    iv: value.iv,
+    kdf,
+    keyUpdatedAt
+  }
+}
+
+function normalizeLegacyKdf(value: unknown): LegacyStoredAiIntegrationV1['kdf'] | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const record = value as Record<string, unknown>
+  const iterations = typeof record.iterations === 'number' && Number.isFinite(record.iterations) && record.iterations > 0
+    ? Math.round(record.iterations)
+    : LEGACY_KDF_ITERATIONS_FALLBACK
+
+  if (record.name !== 'PBKDF2' || record.hash !== 'SHA-256') {
+    return null
+  }
+
+  return {
+    name: 'PBKDF2',
+    hash: 'SHA-256',
+    iterations
+  }
+}
+
+function createPlainStoredAiIntegration(input: {
+  provider: AiProvider
+  apiKey: string
+}): StoredAiIntegrationV2 {
+  return {
+    version: 2,
     provider: input.provider,
-    keyPreview: buildKeyPreview(input.apiKey),
-    encryptedApiKey: bytesToBase64(new Uint8Array(ciphertext)),
-    salt: bytesToBase64(salt),
-    iv: bytesToBase64(iv),
-    kdf: {
-      name: 'PBKDF2',
-      hash: 'SHA-256',
-      iterations: KDF_ITERATIONS
-    },
+    apiKey: input.apiKey.trim(),
     updatedAt: new Date().toISOString()
   }
 }
 
-async function decryptApiKey(record: StoredAiIntegrationV1, pin: string): Promise<string> {
+function toAiIntegrationMetadata(stored: StoredAiIntegrationRecord): AiIntegrationMetadata {
+  if (stored.version === 2) {
+    return {
+      provider: stored.provider,
+      keyPreview: buildKeyPreview(stored.apiKey),
+      updatedAt: stored.updatedAt,
+      storageMode: 'plain'
+    }
+  }
+
+  return {
+    provider: stored.provider,
+    keyPreview: stored.keyPreview,
+    updatedAt: stored.keyUpdatedAt,
+    storageMode: 'legacy-encrypted'
+  }
+}
+
+async function decryptLegacyApiKey(record: LegacyStoredAiIntegrationV1, pin: string): Promise<string> {
   try {
-    const key = await deriveEncryptionKey(
+    const key = await deriveLegacyEncryptionKey(
       pin,
       base64ToBytes(record.salt),
       record.kdf.iterations
@@ -303,11 +291,11 @@ async function decryptApiKey(record: StoredAiIntegrationV1, pin: string): Promis
 
     return apiKey
   } catch {
-    throw new Error('Invalid encryption password.')
+    throw new Error('Invalid legacy encryption password.')
   }
 }
 
-async function deriveEncryptionKey(pin: string, salt: Uint8Array, iterations: number) {
+async function deriveLegacyEncryptionKey(pin: string, salt: Uint8Array, iterations: number) {
   const cryptoApi = getCryptoApi()
   const passwordKey = await cryptoApi.subtle.importKey(
     'raw',
@@ -330,13 +318,13 @@ async function deriveEncryptionKey(pin: string, salt: Uint8Array, iterations: nu
       length: 256
     },
     false,
-    ['encrypt', 'decrypt']
+    ['decrypt']
   )
 }
 
 function assertValidPin(pin: string) {
   if (!isValidAiPin(pin)) {
-    throw new Error('Encryption password must be exactly 4 digits.')
+    throw new Error('Legacy encryption password must be exactly 4 digits.')
   }
 }
 
@@ -351,22 +339,53 @@ function buildKeyPreview(apiKey: string) {
   return trimmed.slice(0, Math.min(8, trimmed.length))
 }
 
+function syncUnlockedAiIntegrationWithStoredRecord(stored: StoredAiIntegrationRecord | null) {
+  if (!stored) {
+    lockAiIntegration()
+    return
+  }
+
+  if (stored.version === 2) {
+    unlockedAiIntegration = {
+      provider: stored.provider,
+      apiKey: stored.apiKey
+    }
+    unlockedAiIntegrationUpdatedAt = stored.updatedAt
+    return
+  }
+
+  if (!unlockedAiIntegration) {
+    return
+  }
+
+  if (
+    unlockedAiIntegration.provider !== stored.provider
+    || unlockedAiIntegrationUpdatedAt !== stored.keyUpdatedAt
+  ) {
+    lockAiIntegration()
+  }
+}
+
+function normalizeUpdatedAt(value: unknown) {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const timestamp = Date.parse(value.trim())
+
+  if (Number.isNaN(timestamp)) {
+    return null
+  }
+
+  return new Date(timestamp).toISOString()
+}
+
 function getCryptoApi() {
   if (typeof window === 'undefined' || !window.crypto || !window.crypto.subtle) {
     throw new Error('Web Crypto API is unavailable in this browser.')
   }
 
   return window.crypto
-}
-
-function bytesToBase64(bytes: Uint8Array) {
-  let binary = ''
-
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte)
-  }
-
-  return btoa(binary)
 }
 
 function base64ToBytes(value: string) {
