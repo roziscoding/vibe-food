@@ -8,7 +8,9 @@
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "lint": "eslint .",
-    "typecheck": "nuxt typecheck"
+    "typecheck": "nuxt typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@iconify-json/lucide": "^1.2.90",
@@ -17,14 +19,17 @@
     "dexie": "4.3.0",
     "idb": "8.0.3",
     "nuxt": "^4.3.1",
+    "qrcode": "1.5.4",
     "rxdb": "16.21.1",
     "tailwindcss": "^4.1.18"
   },
   "devDependencies": {
     "@nuxt/eslint": "^1.15.1",
+    "@types/qrcode": "1.5.6",
     "@vite-pwa/nuxt": "1.1.1",
     "eslint": "^10.0.0",
     "typescript": "^5.9.3",
+    "vitest": "4.0.18",
     "vue-tsc": "^3.2.4"
   },
   "packageManager": "pnpm@10.29.3"

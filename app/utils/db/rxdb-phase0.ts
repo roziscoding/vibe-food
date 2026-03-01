@@ -1,8 +1,10 @@
 import type { RxCollection, RxDatabase, RxJsonSchema } from 'rxdb'
+import type { SyncableCollectionName } from '#shared/utils/sync/protocol'
+import { rxdbHashSha256 } from './hash'
 
-export type Phase0SyncableClientKey = 'ingredients' | 'meals' | 'settings'
+export type Phase0SyncableClientKey = 'ingredients' | 'meals' | 'settings' | 'ai-integration'
 export type Phase0SyncableCollectionKey = 'ingredients' | 'meals'
-export type Phase0SyncableValueKey = 'settings'
+export type Phase0SyncableValueKey = 'settings' | 'ai-integration'
 
 type SyncMetadataFields = {
   updatedAt: string
@@ -30,12 +32,15 @@ type SyncConflictDoc = {
   createdAt: string
 }
 
+export type Phase0SyncConflictEntry = SyncConflictDoc
+
 type Phase0Collections = {
-  ingredients: RxCollection<SyncableDoc>
-  meals: RxCollection<SyncableDoc>
-  settings: RxCollection<SyncableDoc>
-  sync_meta: RxCollection<SyncMetaDoc>
-  sync_conflicts: RxCollection<SyncConflictDoc>
+  'ingredients': RxCollection<SyncableDoc>
+  'meals': RxCollection<SyncableDoc>
+  'settings': RxCollection<SyncableDoc>
+  'ai-integration': RxCollection<SyncableDoc>
+  'sync_meta': RxCollection<SyncMetaDoc>
+  'sync_conflicts': RxCollection<SyncConflictDoc>
 }
 
 type Phase0Database = RxDatabase<Phase0Collections>
@@ -47,28 +52,35 @@ type Phase0Runtime = {
     multiInstance?: boolean
     eventReduce?: boolean
     ignoreDuplicate?: boolean
+    closeDuplicates?: boolean
+    hashFunction?: (input: string) => Promise<string>
   }) => Promise<RxDatabase>
   removeRxDatabase: (databaseName: string, storage: unknown) => Promise<string[]>
   getRxStorageDexie: () => unknown
 }
 
 type LegacyPhase0Snapshot = {
-  ingredients: unknown
-  meals: unknown
-  settings: unknown
+  'ingredients': unknown
+  'meals': unknown
+  'settings': unknown
+  'ai-integration': unknown
 }
 
 const PHASE0_SYNCABLE_COLLECTION_KEYS = ['ingredients', 'meals'] as const
-const PHASE0_SYNCABLE_VALUE_KEYS = ['settings'] as const
+const PHASE0_SYNCABLE_VALUE_KEYS = ['settings', 'ai-integration'] as const
 const PHASE0_SYNCABLE_KEYS = [
   ...PHASE0_SYNCABLE_COLLECTION_KEYS,
   ...PHASE0_SYNCABLE_VALUE_KEYS
 ] as const
 
 const RXDB_NAME = 'vibe-food-rxdb'
-const SETTINGS_DOCUMENT_ID = 'app-settings'
+const PHASE0_SYNCABLE_VALUE_DOCUMENT_IDS = {
+  'settings': 'app-settings',
+  'ai-integration': 'ai-integration'
+} as const
 const META_DOC_MIGRATION_COMPLETE = 'phase0-migration-complete'
 const META_DOC_LOCAL_DEVICE_ID = 'phase0-local-device-id'
+const META_DOC_SKIP_LEGACY_VALUE_IMPORTS = 'phase0-skip-legacy-value-imports'
 
 let rxdbRuntimePromise: Promise<Phase0Runtime> | null = null
 let phase0DbPromise: Promise<Phase0Database> | null = null
@@ -88,17 +100,22 @@ export function isPhase0SyncableValueKey(key: string): key is Phase0SyncableValu
 export async function ensurePhase0RxdbMigration(loadLegacySnapshot: () => Promise<LegacyPhase0Snapshot>): Promise<void> {
   assertBrowser()
   const db = await getPhase0Database()
+  const snapshot = await loadLegacySnapshot()
 
   if (await isMigrationComplete(db)) {
+    if (!(await shouldSkipLegacyValueImports(db))) {
+      await importLegacyValueSnapshot(db, 'settings', snapshot.settings)
+      await importLegacyValueSnapshot(db, 'ai-integration', snapshot['ai-integration'])
+    }
+
     await ensureLocalDeviceId(db)
     return
   }
 
-  const snapshot = await loadLegacySnapshot()
-
   await importLegacyCollectionSnapshot(db, 'ingredients', snapshot.ingredients)
   await importLegacyCollectionSnapshot(db, 'meals', snapshot.meals)
-  await importLegacySettingsValue(db, snapshot.settings)
+  await importLegacyValueSnapshot(db, 'settings', snapshot.settings)
+  await importLegacyValueSnapshot(db, 'ai-integration', snapshot['ai-integration'])
   await ensureLocalDeviceId(db)
   await setMetaValue(db, META_DOC_MIGRATION_COMPLETE, '1')
 }
@@ -166,7 +183,7 @@ export async function readPhase0SyncableValue(key: Phase0SyncableValueKey): Prom
   assertBrowser()
   const db = await getPhase0Database()
   const collection = getCollection(db, key)
-  const doc = await collection.findOne(SETTINGS_DOCUMENT_ID).exec()
+  const doc = await collection.findOne(getPhase0SyncableValueDocumentId(key)).exec()
 
   if (!doc) {
     return null
@@ -184,18 +201,33 @@ export async function readPhase0SyncableValue(key: Phase0SyncableValueKey): Prom
 export async function writePhase0SyncableValue(key: Phase0SyncableValueKey, value: unknown): Promise<void> {
   assertBrowser()
 
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  const db = await getPhase0Database()
+  const collection = getCollection(db, key)
+  const previous = await collection.findOne(getPhase0SyncableValueDocumentId(key)).exec()
+  const previousDoc = previous?.toMutableJSON() as SyncableDoc | undefined
+  const deviceId = await ensureLocalDeviceId(db)
+
+  if (value == null) {
+    if (!previousDoc || previousDoc.deletedAt !== null) {
+      return
+    }
+
+    const result = await collection.bulkUpsert([buildDeletedDocument(previousDoc, deviceId)])
+
+    if (result.error.length > 0) {
+      throw new Error(`Failed to delete ${key} from RxDB`)
+    }
+
+    return
+  }
+
+  if (typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`Expected object value for syncable key "${key}"`)
   }
 
-  const db = await getPhase0Database()
-  const collection = getCollection(db, key)
-  const previous = await collection.findOne(SETTINGS_DOCUMENT_ID).exec()
-  const previousDoc = previous?.toMutableJSON() as SyncableDoc | undefined
-  const deviceId = await ensureLocalDeviceId(db)
   const incoming = {
     ...(value as Record<string, unknown>),
-    id: SETTINGS_DOCUMENT_ID
+    id: getPhase0SyncableValueDocumentId(key)
   }
   const next = buildActiveDocument(incoming, previousDoc, deviceId)
   const result = await collection.bulkUpsert([next])
@@ -219,10 +251,78 @@ export async function clearPhase0RxdbData(): Promise<void> {
   await runtime.removeRxDatabase(RXDB_NAME, runtime.getRxStorageDexie())
 }
 
+export async function clearPhase0LocalSyncableData(): Promise<void> {
+  assertBrowser()
+  const db = await getPhase0Database()
+
+  await Promise.all([
+    removeAllCollectionDocuments(db.collections.ingredients),
+    removeAllCollectionDocuments(db.collections.meals),
+    removeAllCollectionDocuments(db.collections.settings),
+    removeAllCollectionDocuments(db.collections['ai-integration']),
+    removeAllCollectionDocuments(db.collections.sync_conflicts)
+  ])
+
+  await setMetaValue(db, META_DOC_SKIP_LEGACY_VALUE_IMPORTS, '1')
+}
+
 export async function readPhase0LocalDeviceId(): Promise<string> {
   assertBrowser()
   const db = await getPhase0Database()
   return ensureLocalDeviceId(db)
+}
+
+export async function getPhase0SyncCollection(key: SyncableCollectionName): Promise<RxCollection<SyncableDoc>> {
+  assertBrowser()
+  const db = await getPhase0Database()
+  return getCollection(db, key)
+}
+
+export async function getPhase0SyncCollections(): Promise<Pick<Phase0Collections, SyncableCollectionName>> {
+  assertBrowser()
+  const db = await getPhase0Database()
+
+  return {
+    'ingredients': db.collections.ingredients,
+    'meals': db.collections.meals,
+    'settings': db.collections.settings,
+    'ai-integration': db.collections['ai-integration']
+  }
+}
+
+export async function appendPhase0SyncConflictEntry(input: {
+  collectionName: string
+  documentId: string
+  reason: string
+  createdAt?: string
+}): Promise<Phase0SyncConflictEntry> {
+  assertBrowser()
+  const db = await getPhase0Database()
+  const entry: Phase0SyncConflictEntry = {
+    id: createLocalId(),
+    collectionName: normalizeNonEmptyString(input.collectionName, 'unknown'),
+    documentId: normalizeNonEmptyString(input.documentId, 'unknown'),
+    reason: normalizeNonEmptyString(input.reason, 'unknown'),
+    createdAt: normalizeIsoString(input.createdAt, new Date().toISOString())
+  }
+  const result = await db.collections.sync_conflicts.bulkUpsert([entry])
+
+  if (result.error.length > 0) {
+    throw new Error('Failed to persist sync conflict entry.')
+  }
+
+  return entry
+}
+
+export async function readPhase0SyncConflictEntries(limit = 20): Promise<Phase0SyncConflictEntry[]> {
+  assertBrowser()
+  const db = await getPhase0Database()
+  const docs = await db.collections.sync_conflicts.find().exec()
+
+  return docs
+    .map(doc => doc.toMutableJSON() as Phase0SyncConflictEntry)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+    .slice(0, Math.max(1, Math.round(limit)))
 }
 
 async function getPhase0Database(): Promise<Phase0Database> {
@@ -244,23 +344,28 @@ async function createPhase0Database(): Promise<Phase0Database> {
     name: RXDB_NAME,
     storage: runtime.getRxStorageDexie(),
     multiInstance: true,
-    eventReduce: true
+    eventReduce: true,
+    closeDuplicates: import.meta.dev,
+    hashFunction: rxdbHashSha256
   })
 
   await database.addCollections({
-    ingredients: {
+    'ingredients': {
       schema: INGREDIENTS_SCHEMA
     },
-    meals: {
+    'meals': {
       schema: MEALS_SCHEMA
     },
-    settings: {
+    'settings': {
       schema: SETTINGS_SCHEMA
     },
-    sync_meta: {
+    'ai-integration': {
+      schema: AI_INTEGRATION_SCHEMA
+    },
+    'sync_meta': {
       schema: SYNC_META_SCHEMA
     },
-    sync_conflicts: {
+    'sync_conflicts': {
       schema: SYNC_CONFLICTS_SCHEMA
     }
   })
@@ -322,13 +427,15 @@ async function importLegacyCollectionSnapshot(
   }
 }
 
-async function importLegacySettingsValue(db: Phase0Database, legacyValue: unknown) {
-  if (!legacyValue || typeof legacyValue !== 'object' || Array.isArray(legacyValue)) {
+async function importLegacyValueSnapshot(db: Phase0Database, key: Phase0SyncableValueKey, legacyValue: unknown) {
+  const normalized = normalizeLegacySyncableValueForImport(key, legacyValue)
+
+  if (!normalized) {
     return
   }
 
-  const collection = getCollection(db, 'settings')
-  const existing = await collection.findOne(SETTINGS_DOCUMENT_ID).exec()
+  const collection = getCollection(db, key)
+  const existing = await collection.findOne(getPhase0SyncableValueDocumentId(key)).exec()
 
   if (existing) {
     return
@@ -336,18 +443,23 @@ async function importLegacySettingsValue(db: Phase0Database, legacyValue: unknow
 
   const deviceId = await ensureLocalDeviceId(db)
   const doc = buildImportedDocument({
-    ...(legacyValue as Record<string, unknown>),
-    id: SETTINGS_DOCUMENT_ID
+    ...normalized,
+    id: getPhase0SyncableValueDocumentId(key)
   }, deviceId)
   const result = await collection.bulkUpsert([doc])
 
   if (result.error.length > 0) {
-    throw new Error('Failed to import legacy settings into RxDB')
+    throw new Error(`Failed to import legacy ${key} into RxDB`)
   }
 }
 
 async function isMigrationComplete(db: Phase0Database) {
   const doc = await db.collections.sync_meta.findOne(META_DOC_MIGRATION_COMPLETE).exec()
+  return doc?.get('value') === '1'
+}
+
+async function shouldSkipLegacyValueImports(db: Phase0Database) {
+  const doc = await db.collections.sync_meta.findOne(META_DOC_SKIP_LEGACY_VALUE_IMPORTS).exec()
   return doc?.get('value') === '1'
 }
 
@@ -379,8 +491,40 @@ async function setMetaValue(db: Phase0Database, id: string, value: string) {
   }
 }
 
+async function removeAllCollectionDocuments<T extends { id: string }>(collection: RxCollection<T>) {
+  const docs = await collection.find().exec()
+
+  if (docs.length === 0) {
+    return
+  }
+
+  await Promise.all(docs.map(doc => doc.remove()))
+}
+
 function getCollection(db: Phase0Database, key: Phase0SyncableCollectionKey | Phase0SyncableValueKey): RxCollection<SyncableDoc> {
   return db.collections[key]
+}
+
+function getPhase0SyncableValueDocumentId(key: Phase0SyncableValueKey) {
+  return PHASE0_SYNCABLE_VALUE_DOCUMENT_IDS[key]
+}
+
+function normalizeLegacySyncableValueForImport(key: Phase0SyncableValueKey, value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  if (key !== 'ai-integration') {
+    return value as Record<string, unknown>
+  }
+
+  const record = value as Record<string, unknown>
+  const { updatedAt, ...rest } = record
+
+  return {
+    ...rest,
+    keyUpdatedAt: typeof record.keyUpdatedAt === 'string' ? record.keyUpdatedAt : updatedAt
+  }
 }
 
 function buildImportedDocument(record: Record<string, unknown> & { id: string }, deviceId: string): SyncableDoc {
@@ -632,6 +776,29 @@ const SETTINGS_SCHEMA = {
     proteinGoal: { type: 'number' },
     carbsGoal: { type: 'number' },
     fatGoal: { type: 'number' },
+    ...COMMON_SYNC_PROPERTIES
+  },
+  required: ['id', 'updatedAt', 'deletedAt', 'lastModifiedByDeviceId', 'syncVersion']
+} as unknown as RxJsonSchema<SyncableDoc>
+
+const AI_INTEGRATION_SCHEMA = {
+  version: 0,
+  primaryKey: 'id',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: { type: 'string', maxLength: 200 },
+    version: { type: 'number' },
+    provider: { type: 'string' },
+    keyPreview: { type: 'string' },
+    encryptedApiKey: { type: 'string' },
+    salt: { type: 'string' },
+    iv: { type: 'string' },
+    keyUpdatedAt: { type: 'string' },
+    kdf: {
+      type: 'object',
+      additionalProperties: true
+    },
     ...COMMON_SYNC_PROPERTIES
   },
   required: ['id', 'updatedAt', 'deletedAt', 'lastModifiedByDeviceId', 'syncVersion']

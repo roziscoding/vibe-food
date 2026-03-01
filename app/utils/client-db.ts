@@ -118,9 +118,10 @@ async function ensurePhase0SyncStoreReady() {
 
   if (!phase0MigrationPromise) {
     phase0MigrationPromise = ensurePhase0RxdbMigration(async () => ({
-      ingredients: await readLegacyClientValue<unknown>('ingredients'),
-      meals: await readLegacyClientValue<unknown>('meals'),
-      settings: await readLegacyClientValue<unknown>('settings')
+      'ingredients': await readLegacyClientValue<unknown>('ingredients'),
+      'meals': await readLegacyClientValue<unknown>('meals'),
+      'settings': await readLegacyClientValue<unknown>('settings'),
+      'ai-integration': await readLegacyClientValue<unknown>('ai-integration')
     })).catch((error) => {
       phase0MigrationPromise = null
       throw error
@@ -128,6 +129,10 @@ async function ensurePhase0SyncStoreReady() {
   }
 
   await phase0MigrationPromise
+}
+
+export async function ensureClientSyncStoreReady() {
+  await ensurePhase0SyncStoreReady()
 }
 
 async function readLegacyClientValue<T>(key: string): Promise<T | null> {

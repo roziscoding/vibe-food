@@ -19,6 +19,12 @@ export default defineNuxtConfig({
 
   compatibilityDate: '2025-01-15',
 
+  vite: {
+    server: {
+      allowedHosts: ['productive-finder-roll-rays.trycloudflare.com']
+    }
+  },
+
   eslint: {
     config: {
       stylistic: {
