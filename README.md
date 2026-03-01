@@ -1,60 +1,73 @@
-# Nuxt Starter Template
+# Vibe Food
 
-[![Nuxt UI](https://img.shields.io/badge/Made%20with-Nuxt%20UI-00DC82?logo=nuxt&labelColor=020420)](https://ui.nuxt.com)
+Vibe Food is a local-first meal tracker built with Nuxt 4, Nuxt UI, and TypeScript. The app runs as a client-side SPA, keeps its primary data in the browser, and can optionally replicate that data across devices through the built-in sync API.
 
-Use this template to get started with [Nuxt UI](https://ui.nuxt.com) quickly.
+## What the app does
 
-- [Live demo](https://starter-template.nuxt.dev/)
-- [Documentation](https://ui.nuxt.com/docs/getting-started/installation/nuxt)
+- Track meals, calories, protein, carbs, and fat by day.
+- Save reusable ingredients with per-unit nutrition values.
+- Build meals manually or compose them from saved ingredients.
+- Import meals from JSON or with AI-assisted ingredient matching.
+- Import ingredients from nutrition label images with AI.
+- Store calorie and macro goals locally.
+- Sync `ingredients`, `meals`, `settings`, and `ai-integration` across devices.
+- Install as a PWA for a mobile-friendly, offline-capable shell.
 
-<a href="https://starter-template.nuxt.dev/" target="_blank">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://ui.nuxt.com/assets/templates/nuxt/starter-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://ui.nuxt.com/assets/templates/nuxt/starter-light.png">
-    <img alt="Nuxt Starter Template" src="https://ui.nuxt.com/assets/templates/nuxt/starter-light.png" width="830" height="466">
-  </picture>
-</a>
+## Stack
 
-> The starter template for Vue is on https://github.com/nuxt-ui-templates/starter-vue.
+- Nuxt 4 + Vue 3 + TypeScript
+- Nuxt UI v4 + Tailwind CSS v4
+- IndexedDB via `idb`
+- RxDB with Dexie storage for syncable local data
+- Nitro server routes for sync endpoints
+- Vitest for sync protocol, E2EE, and error handling tests
+- Vite PWA for installability and cached app assets
 
-## Quick Start
-
-```bash [Terminal]
-npm create nuxt@latest -- -t github:nuxt-ui-templates/starter
-```
-
-## Deploy your own
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-name=starter&repository-url=https%3A%2F%2Fgithub.com%2Fnuxt-ui-templates%2Fstarter&demo-image=https%3A%2F%2Fui.nuxt.com%2Fassets%2Ftemplates%2Fnuxt%2Fstarter-dark.png&demo-url=https%3A%2F%2Fstarter-template.nuxt.dev%2F&demo-title=Nuxt%20Starter%20Template&demo-description=A%20minimal%20template%20to%20get%20started%20with%20Nuxt%20UI.)
-
-## Setup
-
-Make sure to install the dependencies:
+## Local development
 
 ```bash
 pnpm install
-```
-
-## Development Server
-
-Start the development server on `http://localhost:3000`:
-
-```bash
 pnpm dev
 ```
 
-## Production
+The Nuxt dev server runs on [http://localhost:3123](http://localhost:3123).
 
-Build the application for production:
+Useful commands:
 
 ```bash
+pnpm lint
+pnpm typecheck
+pnpm test
 pnpm build
-```
-
-Locally preview production build:
-
-```bash
 pnpm preview
 ```
 
-Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
+## Architecture summary
+
+- `app/`: SPA pages, components, client-side data access, AI helpers, and sync orchestration.
+- `shared/`: shared sync protocol types and normalization/comparison helpers used by both client and server.
+- `server/`: Nitro API routes and storage helpers for sync vaults, replication, devices, keys, and pairing.
+- `test/`: Vitest coverage for sync protocol ordering/tombstones, E2EE helpers, and sync error classification.
+
+The app is intentionally local-first:
+
+- User-facing data lives in the browser.
+- The sync backend is a replication target, not the primary source of truth.
+- The server only understands sync envelopes, vault metadata, device registration, and pairing.
+
+## Important runtime notes
+
+- `ssr: false` is set in [`nuxt.config.ts`](./nuxt.config.ts), so the app is fully client-rendered.
+- Current sync server persistence uses Nitro `useStorage('data')`. For production, configure a persistent storage driver or synced data will only be as durable as the runtime storage backend.
+- AI provider requests are sent directly from the browser to OpenAI or Anthropic.
+- The current AI integration storage format (`version: 2`) stores the API key locally in IndexedDB in plain form. That is an implementation fact worth preserving or explicitly redesigning, not something to assume is encrypted.
+
+## Project docs
+
+- [docs/README.md](./docs/README.md): documentation index
+- [docs/architecture.md](./docs/architecture.md): runtime boundaries, directory map, and data flow
+- [docs/functionality.md](./docs/functionality.md): user-facing features and route behavior
+- [docs/data-model.md](./docs/data-model.md): persisted records, storage keys, and local data model details
+- [docs/sync.md](./docs/sync.md): sync architecture, endpoints, conflict resolution, and E2EE notes
+- [docs/development.md](./docs/development.md): commands, runtime configuration, deployment notes, and change checklist
+- [AGENTS.md](./AGENTS.md): repo guidance for coding agents and LLMs
