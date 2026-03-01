@@ -20,7 +20,7 @@ Use the index below to pick only the documents that match the task.
 
 ## Skills index
 
-- `nuxt-ui` skill: use this when building or changing UI with `@nuxt/ui` v4, especially component composition, theming, forms, dashboards, and layout work. Skill file: `/Users/roziscoding/.agents/skills/nuxt-ui/SKILL.md`.
+- `nuxt-ui` skill: use this when building or changing UI with `@nuxt/ui` v4, especially component composition, theming, forms, dashboards, and layout work. Skill file: `./.agents/skills/nuxt-ui/SKILL.md`.
 
 ## What to read for common tasks
 
