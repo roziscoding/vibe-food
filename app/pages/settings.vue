@@ -65,6 +65,9 @@ type SyncRecoveryExportPayload = {
   createdAt: string
   passphrase: string
 }
+type QrScannerModule = typeof import('qr-scanner')
+type QrScannerConstructor = QrScannerModule['default']
+type QrScannerInstance = InstanceType<QrScannerConstructor>
 
 type RecommendationSex = 'female' | 'male'
 type RecommendationObjective = 'loss' | 'maintenance' | 'gain' | 'muscle'
@@ -174,8 +177,16 @@ const syncAuthorizeCode = ref('')
 const isAuthorizingSyncPairing = ref(false)
 const isHandlingSyncAuthorizeQuery = ref(false)
 const syncAuthorizeError = ref('')
+const hasSyncAuthorizeCamera = ref(false)
+const isCheckingSyncAuthorizeCamera = ref(false)
+const isSyncAuthorizeScannerOpen = ref(false)
+const isStartingSyncAuthorizeScanner = ref(false)
+const syncAuthorizeScannerError = ref('')
+const syncAuthorizeScannerVideo = ref<HTMLVideoElement | null>(null)
 
 let syncPairingStatusPollTimer: ReturnType<typeof setTimeout> | null = null
+let syncAuthorizeQrScanner: QrScannerInstance | null = null
+let syncAuthorizeQrScannerImportPromise: Promise<QrScannerConstructor> | null = null
 
 const form = reactive({
   dailyCalorieGoal: '',
@@ -303,15 +314,19 @@ watch(isSyncDeleteCloudModalOpen, (isOpen) => {
 
 watch(isSyncAuthorizeModalOpen, (isOpen) => {
   if (isOpen) {
+    void refreshSyncAuthorizeCameraAvailability()
     return
   }
 
+  stopSyncAuthorizeScanner()
   syncAuthorizeCode.value = ''
   syncAuthorizeError.value = ''
+  syncAuthorizeScannerError.value = ''
 })
 
 onBeforeUnmount(() => {
   clearSyncPairingStatusPolling()
+  stopSyncAuthorizeScanner()
 })
 
 const syncStatusLabel = computed(() => {
@@ -1126,6 +1141,143 @@ function formatSyncPairingCode(value: string | null | undefined) {
   return value
 }
 
+function extractSyncAuthorizeCodeFromScanResult(value: string) {
+  const directCode = normalizeLocalSyncPairingCode(value)
+
+  if (directCode) {
+    return directCode
+  }
+
+  try {
+    const baseUrl = typeof window === 'undefined' ? 'https://example.invalid' : window.location.origin
+    const parsedUrl = new URL(value, baseUrl)
+    return normalizeLocalSyncPairingCode(parsedUrl.searchParams.get(syncPairingAuthorizeQueryKey))
+  } catch {
+    return null
+  }
+}
+
+async function loadSyncAuthorizeQrScanner() {
+  if (!syncAuthorizeQrScannerImportPromise) {
+    syncAuthorizeQrScannerImportPromise = import('qr-scanner').then(module => module.default)
+  }
+
+  return syncAuthorizeQrScannerImportPromise
+}
+
+async function refreshSyncAuthorizeCameraAvailability() {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    hasSyncAuthorizeCamera.value = false
+    return
+  }
+
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    hasSyncAuthorizeCamera.value = false
+    return
+  }
+
+  isCheckingSyncAuthorizeCamera.value = true
+
+  try {
+    const QrScanner = await loadSyncAuthorizeQrScanner()
+    hasSyncAuthorizeCamera.value = await QrScanner.hasCamera()
+  } catch (error) {
+    console.error('Failed to detect QR scanner camera availability', error)
+    hasSyncAuthorizeCamera.value = false
+  } finally {
+    isCheckingSyncAuthorizeCamera.value = false
+  }
+}
+
+function stopSyncAuthorizeScanner() {
+  if (syncAuthorizeQrScanner) {
+    try {
+      syncAuthorizeQrScanner.stop()
+      syncAuthorizeQrScanner.destroy()
+    } catch (error) {
+      console.error('Failed to stop QR scanner cleanly', error)
+    } finally {
+      syncAuthorizeQrScanner = null
+    }
+  }
+
+  isSyncAuthorizeScannerOpen.value = false
+}
+
+async function handleSyncAuthorizeScanResult(value: string) {
+  const pairingCode = extractSyncAuthorizeCodeFromScanResult(value)
+
+  if (!pairingCode) {
+    syncAuthorizeScannerError.value = 'The scanned QR code does not contain a valid sync pairing code.'
+    return
+  }
+
+  syncAuthorizeCode.value = pairingCode
+  syncAuthorizeError.value = ''
+  syncAuthorizeScannerError.value = ''
+  stopSyncAuthorizeScanner()
+}
+
+async function openSyncAuthorizeScanner() {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  syncAuthorizeScannerError.value = ''
+
+  if (!hasSyncAuthorizeCamera.value) {
+    await refreshSyncAuthorizeCameraAvailability()
+  }
+
+  if (!hasSyncAuthorizeCamera.value) {
+    syncAuthorizeScannerError.value = 'No camera is available for in-app QR scanning on this device.'
+    return
+  }
+
+  isStartingSyncAuthorizeScanner.value = true
+  isSyncAuthorizeScannerOpen.value = true
+
+  try {
+    await nextTick()
+
+    const videoElement = syncAuthorizeScannerVideo.value
+
+    if (!videoElement) {
+      throw new Error('The QR scanner preview could not be initialized.')
+    }
+
+    const QrScanner = await loadSyncAuthorizeQrScanner()
+
+    syncAuthorizeQrScanner = new QrScanner(
+      videoElement,
+      (result) => {
+        void handleSyncAuthorizeScanResult(result.data)
+      },
+      {
+        preferredCamera: 'environment',
+        maxScansPerSecond: 12,
+        returnDetailedScanResult: true
+      }
+    )
+
+    await syncAuthorizeQrScanner.start()
+  } catch (error) {
+    stopSyncAuthorizeScanner()
+    syncAuthorizeScannerError.value = error instanceof Error ? error.message : 'Could not start the camera QR scanner.'
+  } finally {
+    isStartingSyncAuthorizeScanner.value = false
+  }
+}
+
+async function toggleSyncAuthorizeScanner() {
+  if (isSyncAuthorizeScannerOpen.value) {
+    stopSyncAuthorizeScanner()
+    return
+  }
+
+  await openSyncAuthorizeScanner()
+}
+
 async function toggleSyncConnectQr() {
   if (isSyncConnectQrExpanded.value) {
     isSyncConnectQrExpanded.value = false
@@ -1282,13 +1434,16 @@ function closeSyncConnectModal() {
 function openSyncAuthorizeModal() {
   syncAuthorizeCode.value = ''
   syncAuthorizeError.value = ''
+  syncAuthorizeScannerError.value = ''
   isSyncAuthorizeModalOpen.value = true
 }
 
 function closeSyncAuthorizeModal() {
+  stopSyncAuthorizeScanner()
   isSyncAuthorizeModalOpen.value = false
   syncAuthorizeCode.value = ''
   syncAuthorizeError.value = ''
+  syncAuthorizeScannerError.value = ''
 }
 
 async function prepareSyncAuthorizeModalFromQuery(value: string) {
@@ -3190,6 +3345,41 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
             >
               Pairing code
             </label>
+
+            <div
+              v-if="hasSyncAuthorizeCamera || isCheckingSyncAuthorizeCamera"
+              class="space-y-2 rounded-lg border border-default bg-muted/10 px-3 py-3"
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <UButton
+                  type="button"
+                  color="neutral"
+                  variant="soft"
+                  icon="i-lucide-camera"
+                  :loading="isCheckingSyncAuthorizeCamera || isStartingSyncAuthorizeScanner"
+                  @click="toggleSyncAuthorizeScanner"
+                >
+                  {{ isSyncAuthorizeScannerOpen ? 'Stop scanning' : 'Scan QR code' }}
+                </UButton>
+
+                <p class="text-xs text-muted">
+                  Scan the QR code shown on the other device and the pairing code will fill in automatically.
+                </p>
+              </div>
+
+              <div
+                v-if="isSyncAuthorizeScannerOpen"
+                class="overflow-hidden rounded-xl border border-default bg-black"
+              >
+                <video
+                  ref="syncAuthorizeScannerVideo"
+                  class="aspect-square w-full bg-black object-cover"
+                  muted
+                  playsinline
+                />
+              </div>
+            </div>
+
             <UInput
               id="sync-pairing-code"
               v-model="syncAuthorizeCode"
@@ -3205,6 +3395,13 @@ function getActivityFactor(sex: RecommendationSex, activityLevel: Recommendation
               Enter the code exactly as shown. Codes are case-sensitive.
             </p>
           </div>
+
+          <p
+            v-if="syncAuthorizeScannerError"
+            class="text-sm text-error"
+          >
+            {{ syncAuthorizeScannerError }}
+          </p>
 
           <p
             v-if="syncAuthorizeError"
